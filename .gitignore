@@ -1,0 +1,16 @@
+/target/
+**/target/
+.DS_Store
+Thumbs.db
+.codex-artifacts/
+.pulse-install-test/
+examples/*/output/*/repos/
+examples/*/output/*/runs/
+examples/*/output/*/logs/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+state/
+work/
+tmp/
+spikes/ras/target/

@@ -1,0 +1,39 @@
+[workspace]
+members = [
+    "crates/pulse-cli",
+    "crates/pulse-core",
+    "crates/pulse-config",
+    "crates/pulse-input",
+    "crates/pulse-fetch",
+    "crates/pulse-git",
+    "crates/pulse-analyze",
+    "crates/pulse-store",
+    "crates/pulse-export",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1.0.100"
+bstr = "1.12.1"
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "serde"] }
+clap = { version = "4.5.48", features = ["derive"] }
+content_inspector = "0.2.4"
+csv = "1.4.0"
+gix = "0.81.0"
+globset = "0.4.16"
+ignore = "0.4.25"
+infer = "0.19.0"
+memchr = "2.7.6"
+rayon = "1.11.0"
+rusqlite = { version = "0.39.0", features = ["bundled", "chrono"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+serde_yaml = "0.9.34"
+sha2 = "0.10.9"
+thiserror = "2.0.17"
+

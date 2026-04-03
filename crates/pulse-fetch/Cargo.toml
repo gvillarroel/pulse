@@ -1,0 +1,15 @@
+[package]
+name = "pulse-fetch"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+pulse-core = { path = "../pulse-core" }
+pulse-git = { path = "../pulse-git" }
+
+[dev-dependencies]
+tempfile = "3.23.0"

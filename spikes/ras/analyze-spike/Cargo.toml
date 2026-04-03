@@ -1,0 +1,17 @@
+[package]
+name = "analyze-spike"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bstr.workspace = true
+clap.workspace = true
+content_inspector.workspace = true
+ignore.workspace = true
+infer.workspace = true
+memchr.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokei.workspace = true

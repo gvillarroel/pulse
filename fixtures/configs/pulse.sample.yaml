@@ -1,0 +1,11 @@
+repositories:
+  csv: ../csv/repos.sample.csv
+analysis:
+  with_history: true
+focus:
+  include:
+    - src/**/*.rs
+    - Cargo.toml
+  exclude:
+    - target/**
+

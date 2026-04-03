@@ -1,0 +1,11 @@
+[package]
+name = "pulse-export"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+csv.workspace = true
+serde_json.workspace = true
+plotly = { version = "0.14.1", features = ["plotly_embed_js"] }
+pulse-core = { path = "../pulse-core" }

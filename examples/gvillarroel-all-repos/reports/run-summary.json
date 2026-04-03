@@ -1,0 +1,41 @@
+{
+  "summary": {
+    "repositories": 44,
+    "fetched": 43,
+    "repo_snapshots": 39,
+    "file_snapshots": 18545,
+    "weekly_evolution": 206
+  },
+  "failures": [
+    {
+      "repo_key": "github/gvillarroel/https-gitlab.com-graphviz-graphviz",
+      "stage": "run",
+      "status": "failed",
+      "detail": "permanent: failed to read windows/dependencies/graphviz-build-utilities"
+    },
+    {
+      "repo_key": "github/gvillarroel/keras-retinanet",
+      "stage": "run",
+      "status": "failed",
+      "detail": "permanent: failed to read tests/test-data"
+    },
+    {
+      "repo_key": "github/gvillarroel/project-ai",
+      "stage": "run",
+      "status": "failed",
+      "detail": "permanent: failed to read \"models/Pre an\\303\\241lisis Economicos.ipynb\""
+    },
+    {
+      "repo_key": "github/gvillarroel/python_euler",
+      "stage": "run",
+      "status": "failed",
+      "detail": "permanent: permanent: fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree.\nUse '--' to separate paths from revisions, like this:\n'git <command> [<revision>...] -- [<file>...]'"
+    },
+    {
+      "repo_key": "github/gvillarroel/synthetic-data-for-text",
+      "stage": "run",
+      "status": "failed",
+      "detail": "permanent: failed to read \"docs/dfd/avance_tesis/motivaci\\303\\263n.puml\""
+    }
+  ]
+}

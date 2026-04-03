@@ -1,0 +1,8 @@
+repo_key,stage,status,detail
+github/gvillarroel/https-gitlab.com-graphviz-graphviz,run,failed,permanent: failed to read windows/dependencies/graphviz-build-utilities
+github/gvillarroel/keras-retinanet,run,failed,permanent: failed to read tests/test-data
+github/gvillarroel/project-ai,run,failed,"permanent: failed to read ""models/Pre an\303\241lisis Economicos.ipynb"""
+github/gvillarroel/python_euler,run,failed,"permanent: permanent: fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree.
+Use '--' to separate paths from revisions, like this:
+'git <command> [<revision>...] -- [<file>...]'"
+github/gvillarroel/synthetic-data-for-text,run,failed,"permanent: failed to read ""docs/dfd/avance_tesis/motivaci\303\263n.puml"""

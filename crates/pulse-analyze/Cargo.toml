@@ -1,0 +1,15 @@
+[package]
+name = "pulse-analyze"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bstr.workspace = true
+chrono.workspace = true
+content_inspector.workspace = true
+globset.workspace = true
+infer.workspace = true
+memchr.workspace = true
+serde.workspace = true
+pulse-core = { path = "../pulse-core" }

@@ -1,0 +1,11 @@
+[package]
+name = "pulse-input"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+csv.workspace = true
+serde.workspace = true
+pulse-core = { path = "../pulse-core" }
+pulse-config = { path = "../pulse-config" }
