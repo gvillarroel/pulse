@@ -109,7 +109,7 @@ focus:
     - target/**
 ```
 
-See [fixtures/configs/pulse.sample.yaml](/Users/villa/dev/pulse/fixtures/configs/pulse.sample.yaml).
+The repository also includes a sample YAML config under `fixtures/configs/pulse.sample.yaml`.
 
 ## 5. First workflow: inspect the target list
 
@@ -242,7 +242,7 @@ What each part means:
 - `logs/`: reserved for future logs
 - `exports/`: generated HTML reports and future exported datasets
 
-More detail: [docs/state-layout/README.md](/Users/villa/dev/pulse/docs/state-layout/README.md)
+More detail: [state-layout/README.md](./state-layout/README.md)
 
 ## 10. How to inspect results
 
@@ -270,7 +270,7 @@ Main tables:
 - `file_snapshots`
 - `weekly_evolution`
 
-Schema reference: [docs/schemas/state-tables.md](/Users/villa/dev/pulse/docs/schemas/state-tables.md)
+Schema reference: [schemas/state-tables.md](./schemas/state-tables.md)
 
 ## 11. Recommended beginner workflows
 
@@ -343,7 +343,4 @@ This makes the tool usable now for early repository investigation while leaving 
 
 ## 14. Worked examples
 
-If you prefer to start from a real run instead of from scratch, use:
-
-- [examples/README.md](/Users/villa/dev/pulse/examples/README.md)
-- [examples/gvillarroel-all-repos/README.md](/Users/villa/dev/pulse/examples/gvillarroel-all-repos/README.md)
+If you prefer to start from a real run instead of from scratch, inspect the worked examples under the repository `examples/` folder.

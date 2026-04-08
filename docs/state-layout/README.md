@@ -2,6 +2,9 @@
 
 `pulse run` writes durable operator-managed state under `--state-dir`.
 
+Read this after [user-manual.md](../user-manual.md) when you need to inspect persisted state.
+Next: [../schemas/state-tables.md](../schemas/state-tables.md)
+
 ## Directories
 
 - `repos/`: persistent bare Git caches
@@ -27,3 +30,11 @@ Current default export:
 - `contributor_snapshots`
 - `weekly_evolution`
 - `artifacts`
+
+Reserved today:
+
+- `contributors`
+- `contributor_snapshots`
+- `artifacts`
+
+These tables exist in the schema, but the current V1 workflow does not rely on them for core operator flows.

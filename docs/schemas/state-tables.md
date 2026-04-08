@@ -1,5 +1,8 @@
 # SQLite Tables
 
+Read this after [../state-layout/README.md](../state-layout/README.md) when you need table-level detail.
+See also: [../user-manual.md](../user-manual.md)
+
 ## Operational tables
 
 - `runs`: run boundaries and timestamps
@@ -20,3 +23,7 @@
 - `weekly_evolution`
 - `artifacts`
 
+Status note:
+
+- `weekly_evolution` is active when history is enabled
+- `contributors`, `contributor_snapshots`, and `artifacts` are reserved for future slices and should not be treated as core current output

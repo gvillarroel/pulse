@@ -2,10 +2,13 @@
 
 `pulse` is organized around a Rust workspace plus root-level decision and research folders.
 
+Read this after [../README.md](../README.md) or [../user-manual.md](../user-manual.md) when you need codebase orientation.
+See also: [../state-layout/README.md](../state-layout/README.md)
+
 ## Root Responsibilities
 
 - `m.md`: master navigation index
-- `README.md`: navigation index and implementation status
+- `README.md`: product overview and quick start
 - `spec.md`: product and pipeline specification
 - `commands.md`: CLI contract
 - `ADR/`: architecture decisions and superseding records
