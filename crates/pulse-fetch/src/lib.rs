@@ -3,8 +3,11 @@ use chrono::Utc;
 use pulse_core::{FailureClass, FetchOutcome, RepoTarget, repo_cache_path};
 use pulse_git::repo_exists;
 use serde::{Deserialize, Serialize};
+use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
+
+pub const EMPTY_REPOSITORY_REVISION: &str = "EMPTY_REPOSITORY";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchError {
@@ -60,8 +63,11 @@ fn clone_bare(target: &Path, repo: &RepoTarget) -> Result<()> {
 }
 
 fn current_head(git_dir: &Path) -> Result<String> {
-    let output = run_git_capture(git_dir, ["rev-parse", "HEAD"])?;
-    Ok(output.trim().to_string())
+    match run_git_capture(git_dir, ["rev-parse", "HEAD"]) {
+        Ok(output) => Ok(output.trim().to_string()),
+        Err(err) if is_empty_head_error(&err) => Ok(EMPTY_REPOSITORY_REVISION.to_string()),
+        Err(err) => Err(err),
+    }
 }
 
 fn run_git<'a>(
@@ -131,20 +137,40 @@ pub fn file_content(git_dir: &Path, revision: &str, path: &str) -> Result<Vec<u8
 }
 
 pub fn list_tree(git_dir: &Path, revision: &str) -> Result<Vec<TreeEntry>> {
-    let output = run_git_capture_internal(git_dir, ["ls-tree", "-r", "-l", revision], None)?;
+    if revision == EMPTY_REPOSITORY_REVISION {
+        return Ok(Vec::new());
+    }
+
+    let output = run_git_capture_os(
+        git_dir,
+        [
+            OsStr::new("ls-tree"),
+            OsStr::new("-r"),
+            OsStr::new("-l"),
+            OsStr::new("-z"),
+            OsStr::new(revision),
+        ],
+        None,
+    )?;
     let mut entries = Vec::new();
-    for line in output.lines() {
-        if let Some((meta, path)) = line.split_once('\t') {
-            let parts: Vec<_> = meta.split_whitespace().collect();
-            if parts.len() < 4 {
-                continue;
-            }
-            let size = parts[3].parse::<u64>().unwrap_or(0);
-            entries.push(TreeEntry {
-                path: path.to_string(),
-                size_bytes: size,
-            });
+    for record in output
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+    {
+        let Some(tab_index) = record.iter().position(|byte| *byte == b'\t') else {
+            continue;
+        };
+        let meta = String::from_utf8_lossy(&record[..tab_index]);
+        let parts: Vec<_> = meta.split_whitespace().collect();
+        if parts.len() < 4 || parts[1] != "blob" {
+            continue;
         }
+        let size = parts[3].parse::<u64>().unwrap_or(0);
+        let path = String::from_utf8_lossy(&record[tab_index + 1..]).into_owned();
+        entries.push(TreeEntry {
+            path,
+            size_bytes: size,
+        });
     }
     Ok(entries)
 }
@@ -153,6 +179,40 @@ pub fn list_tree(git_dir: &Path, revision: &str) -> Result<Vec<TreeEntry>> {
 pub struct TreeEntry {
     pub path: String,
     pub size_bytes: u64,
+}
+
+fn run_git_capture_os<'a>(
+    git_dir: &Path,
+    args: impl IntoIterator<Item = &'a OsStr>,
+    worktree: Option<&Path>,
+) -> Result<Vec<u8>> {
+    let mut command = Command::new("git");
+    if repo_exists(git_dir) {
+        command.arg(format!("--git-dir={}", git_dir.display()));
+    }
+    if let Some(worktree) = worktree {
+        command.arg(format!("--work-tree={}", worktree.display()));
+    }
+    command.args(args);
+    let output = command.output().context("failed to launch git")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(FetchError {
+            class: classify_git_error(&stderr),
+            message: stderr.trim().to_string(),
+        });
+    }
+    Ok(output.stdout)
+}
+
+fn is_empty_head_error(error: &anyhow::Error) -> bool {
+    let Some(fetch_error) = error.downcast_ref::<FetchError>() else {
+        return false;
+    };
+    let lower = fetch_error.message.to_ascii_lowercase();
+    lower.contains("ambiguous argument 'head'")
+        || lower.contains("unknown revision or path not in the working tree")
+        || lower.contains("needed a single revision")
 }
 
 #[cfg(test)]
@@ -235,5 +295,31 @@ mod tests {
         let outcome = fetch_repo(&state, &repo).expect("fetch local repo");
         assert!(outcome.git_dir.exists());
         assert!(!outcome.fetched_revision.is_empty());
+    }
+
+    #[test]
+    fn fetches_empty_bare_repo() {
+        let tmp = tempdir().expect("temp");
+        let origin = tmp.path().join("origin");
+        let state = tmp.path().join("state");
+
+        Command::new("git")
+            .args(["init", "--bare", origin.to_str().expect("origin path")])
+            .status()
+            .expect("init bare");
+
+        let repo = RepoTarget {
+            repo: "local/empty".into(),
+            provider: "local".into(),
+            owner: "sample".into(),
+            owner_color: Some("#007298".into()),
+            name: "empty".into(),
+            url: origin.to_string_lossy().to_string(),
+            default_branch: None,
+            tags: Vec::new(),
+            active: true,
+        };
+        let outcome = fetch_repo(&state, &repo).expect("fetch empty repo");
+        assert_eq!(outcome.fetched_revision, EMPTY_REPOSITORY_REVISION);
     }
 }

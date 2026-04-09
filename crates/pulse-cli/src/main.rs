@@ -9,13 +9,15 @@ use pulse_core::{
     config_hash,
 };
 use pulse_export::{report_as_html, summary_as_json, targets_as_csv, targets_as_json};
-use pulse_fetch::{fetch_repo, file_content, list_tree};
+use pulse_fetch::{EMPTY_REPOSITORY_REVISION, fetch_repo, file_content, list_tree};
 use pulse_input::resolve_targets;
 use pulse_store::Store;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+const MAX_GIT_PATH_ARG_BYTES: usize = 6_000;
 
 #[derive(Parser, Debug)]
 #[command(name = "pulse", version, about = "Terminal-first repository analytics")]
@@ -257,6 +259,9 @@ fn enrich_ai_report(
         let Some(paths) = candidate_paths_by_repo.get(&fetch.repo_key) else {
             continue;
         };
+        if fetch.fetched_revision == EMPTY_REPOSITORY_REVISION {
+            continue;
+        }
         let git_dir = resolve_git_dir(&fetch.git_dir, state_dir);
         let owner = repo_owner
             .get(&fetch.repo_key)
@@ -273,7 +278,8 @@ fn enrich_ai_report(
                 continue;
             };
             let doc_name = file_name_lower(path);
-            let linked_docs = read_markdown_links(&git_dir, &fetch.fetched_revision, path)?;
+            let linked_docs =
+                read_markdown_links(&git_dir, &fetch.fetched_revision, path).unwrap_or_default();
             for linked_doc in &linked_docs {
                 by_link
                     .entry((doc_name.clone(), linked_doc.clone()))
@@ -453,6 +459,9 @@ fn resolve_git_dir(git_dir: &Path, state_dir: &Path) -> PathBuf {
 }
 
 fn read_markdown_links(git_dir: &Path, revision: &str, path: &str) -> Result<Vec<String>> {
+    if revision == EMPTY_REPOSITORY_REVISION {
+        return Ok(Vec::new());
+    }
     let content = file_content(git_dir, revision, path)
         .with_context(|| format!("failed to inspect markdown links in {path}"))?;
     let text = String::from_utf8_lossy(&content);
@@ -485,6 +494,9 @@ fn first_addition_date(
     revision: &str,
     path: &str,
 ) -> Result<Option<chrono::NaiveDate>> {
+    if revision == EMPTY_REPOSITORY_REVISION {
+        return Ok(None);
+    }
     let output = Command::new("git")
         .arg(format!("--git-dir={}", git_dir.display()))
         .args([
@@ -538,10 +550,14 @@ fn process_repo(
         store.set_stage_status(&repo.key(), "analyze", StageStatus::Running, None)?;
         let tree = list_tree(&fetch.git_dir, &fetch.fetched_revision)?;
         let mut files = Vec::with_capacity(tree.len());
+        let mut skipped_reads = 0_u64;
         for entry in tree {
-            let contents = file_content(&fetch.git_dir, &fetch.fetched_revision, &entry.path)
-                .with_context(|| format!("failed to read {}", entry.path))?;
-            files.push((entry.path, contents));
+            match file_content(&fetch.git_dir, &fetch.fetched_revision, &entry.path) {
+                Ok(contents) => files.push((entry.path, contents)),
+                Err(_) => {
+                    skipped_reads += 1;
+                }
+            }
         }
         let (repo_snapshot, file_snapshots) = analyze_revision(
             &repo.key(),
@@ -551,7 +567,14 @@ fn process_repo(
             focus_hash,
         )?;
         store.persist_snapshot(&repo_snapshot, &file_snapshots)?;
-        store.set_stage_status(&repo.key(), "analyze", StageStatus::Completed, None)?;
+        let analyze_detail =
+            (skipped_reads > 0).then(|| format!("skipped {skipped_reads} unreadable tree entries"));
+        store.set_stage_status(
+            &repo.key(),
+            "analyze",
+            StageStatus::Completed,
+            analyze_detail.as_deref(),
+        )?;
     }
 
     if with_history {
@@ -560,6 +583,7 @@ fn process_repo(
         store.persist_weekly_evolution(&weekly)?;
         store.set_stage_status(&repo.key(), "history", StageStatus::Completed, None)?;
     }
+    store.set_stage_status(&repo.key(), "run", StageStatus::Completed, None)?;
     Ok(())
 }
 
@@ -591,10 +615,11 @@ fn build_weekly_history(git_dir: &Path, repo_key: &str) -> Result<Vec<WeeklyEvol
         .output()
         .context("failed to run git log")?;
     if !output.status.success() {
-        return Err(anyhow!(
-            "git log failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if is_empty_revision_message(&stderr) {
+            return Ok(Vec::new());
+        }
+        return Err(anyhow!("git log failed: {}", stderr.trim()));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -631,37 +656,96 @@ fn build_ai_doc_commit_history(git_dir: &Path, paths: &[String]) -> Result<BTree
         return Ok(BTreeMap::new());
     }
 
-    let mut command = Command::new("git");
-    command
-        .arg(format!("--git-dir={}", git_dir.display()))
-        .args(["log", "--date=short", "--format=%cs"]);
-    command.arg("--");
-    for path in paths {
-        command.arg(path);
-    }
-    let output = command
-        .output()
-        .context("failed to run git log for AI docs")?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "git log for AI docs failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let mut by_week = BTreeMap::new();
-    for line in stdout
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-    {
-        let date = chrono::NaiveDate::parse_from_str(line, "%Y-%m-%d")?;
-        let offset = date.weekday().num_days_from_monday() as i64;
-        let week_start = date - chrono::Days::new(offset as u64);
-        *by_week
-            .entry(week_start.format("%Y-%m-%d").to_string())
-            .or_insert(0) += 1;
+    for chunk in chunk_paths_for_git(paths) {
+        let mut command = Command::new("git");
+        command
+            .arg(format!("--git-dir={}", git_dir.display()))
+            .args(["log", "--date=short", "--format=%cs"]);
+        command.arg("--");
+        for path in chunk {
+            command.arg(path);
+        }
+        let output = command
+            .output()
+            .context("failed to run git log for AI docs")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if is_empty_revision_message(&stderr) {
+                continue;
+            }
+            return Err(anyhow!("git log for AI docs failed: {}", stderr.trim()));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
+            let date = chrono::NaiveDate::parse_from_str(line, "%Y-%m-%d")?;
+            let offset = date.weekday().num_days_from_monday() as i64;
+            let week_start = date - chrono::Days::new(offset as u64);
+            *by_week
+                .entry(week_start.format("%Y-%m-%d").to_string())
+                .or_insert(0) += 1;
+        }
     }
     Ok(by_week)
+}
+
+fn chunk_paths_for_git(paths: &[String]) -> Vec<Vec<&str>> {
+    let mut chunks = Vec::new();
+    let mut current = Vec::new();
+    let mut current_bytes = 0_usize;
+
+    for path in paths {
+        let path_bytes = path.len() + 1;
+        if !current.is_empty() && current_bytes + path_bytes > MAX_GIT_PATH_ARG_BYTES {
+            chunks.push(current);
+            current = Vec::new();
+            current_bytes = 0;
+        }
+        current.push(path.as_str());
+        current_bytes += path_bytes;
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
+fn is_empty_revision_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("ambiguous argument 'head'")
+        || lower.contains("does not have any commits yet")
+        || lower.contains("your current branch")
+        || lower.contains("unknown revision or path not in the working tree")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunks_git_paths_to_bounded_argument_lists() {
+        let paths = vec!["a".repeat(3_000), "b".repeat(3_000), "c".repeat(3_000)];
+        let chunks = chunk_paths_for_git(&paths);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].len(), 1);
+        assert_eq!(chunks[1].len(), 1);
+        assert_eq!(chunks[2].len(), 1);
+    }
+
+    #[test]
+    fn detects_empty_revision_errors() {
+        assert!(is_empty_revision_message(
+            "fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree."
+        ));
+        assert!(is_empty_revision_message(
+            "fatal: your current branch 'main' does not have any commits yet"
+        ));
+        assert!(!is_empty_revision_message("fatal: bad object deadbeef"));
+    }
 }

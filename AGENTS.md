@@ -151,7 +151,7 @@ Contributors and agents working on this repository should:
 This repository should keep two explicit knowledge folders for future reference:
 
 - `spikes/`: experimental work, prototypes, benchmarks, and short technical investigations
-- `ADR/`: architecture decision records for the project
+- `.specs/adr/`: architecture decision records for the project
 
 Guidance for `spikes/`:
 
@@ -160,7 +160,7 @@ Guidance for `spikes/`:
 - spike outputs may later be used as reference material when choosing implementation direction
 - spike code should not be treated as production-ready by default
 
-Guidance for `ADR/`:
+Guidance for `.specs/adr/`:
 
 - use it to record important architectural decisions once they are made
 - each ADR should capture context, decision, consequences, and any notable alternatives considered
@@ -192,3 +192,8 @@ It is done when:
 - it has a defined failure model
 - it fits the documented CLI and data model
 - it includes enough validation to trust the result
+
+## Decision Records
+
+- Record durable technical or workflow decisions as ADRs under `.specs/adr/*.md`.
+- Read existing ADRs before changing a previously chosen technical direction.
