@@ -16,6 +16,9 @@ use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
 
 const MAX_GIT_PATH_ARG_BYTES: usize = 6_000;
 
@@ -129,10 +132,13 @@ fn list_command(cmd: ListCommand) -> Result<()> {
 
 fn run_command(cmd: RunCommand) -> Result<()> {
     let config = maybe_load_config(cmd.input.config.as_deref())?;
+    if cmd.concurrency == 0 {
+        return Err(anyhow!("--concurrency must be at least 1"));
+    }
     let targets = resolve_targets(config.as_ref(), cmd.input.input.as_deref())?;
     let total_targets = targets.len();
     let layout = StateLayout::new(&cmd.state_dir);
-    let mut store = Store::open(&layout)?;
+    let store = Store::open(&layout)?;
     let run_id = store.begin_run("pulse run")?;
 
     let focus = merged_focus(config.as_ref(), &cmd.focus, cmd.focus_file.as_deref())?;
@@ -148,49 +154,67 @@ fn run_command(cmd: RunCommand) -> Result<()> {
         Some(ai_docs.compile()?)
     };
 
-    let mut failures = 0_usize;
+    let with_history = cmd.with_history
+        || config
+            .as_ref()
+            .map(|c| c.analysis.with_history)
+            .unwrap_or(false);
     let mut progress = cmd.progress.then(|| ProgressReporter::new(total_targets));
-    for repo in targets {
-        let repo_key = repo.key();
-        if let Some(progress) = progress.as_mut() {
-            progress.start_repo(&repo_key);
-        }
-        store.upsert_repository(&repo)?;
-        if let Err(error) = process_repo(
-            &mut store,
-            &layout,
-            &repo,
-            &compiled_focus,
-            &focus_hash,
-            ai_doc_matcher.as_ref(),
-            cmd.with_history
-                || config
-                    .as_ref()
-                    .map(|c| c.analysis.with_history)
-                    .unwrap_or(false),
-        ) {
-            failures += 1;
-            store.record_failure(
-                &repo_key,
-                "run",
-                pulse_core::FailureClass::Permanent,
-                &error.to_string(),
-            )?;
-            if let Some(progress) = progress.as_mut() {
-                progress.finish_repo(&repo_key, false);
-            }
-            if cmd.fail_fast {
-                return Err(error);
-            }
-        } else if let Some(progress) = progress.as_mut() {
-            progress.finish_repo(&repo_key, true);
-        }
-    }
+    let worker_layout = layout.clone();
+    let worker_focus = compiled_focus.clone();
+    let worker_focus_hash = focus_hash.clone();
+    let worker_ai_doc_matcher = ai_doc_matcher.clone();
+    let concurrency = cmd.concurrency;
+    let fail_fast = cmd.fail_fast;
+    let (progress_tx, progress_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        run_parallel_jobs(targets, concurrency, fail_fast, move |repo| {
+            let outcome = process_repo_job(
+                repo,
+                &worker_layout,
+                &worker_focus,
+                &worker_focus_hash,
+                worker_ai_doc_matcher.as_ref(),
+                with_history,
+                Some(&progress_tx),
+            );
+            let failed = outcome.failed;
+            (outcome, failed)
+        })
+    });
+
     if let Some(progress) = progress.as_mut() {
+        while let Ok(event) = progress_rx.recv() {
+            match event {
+                ProgressEvent::Started(repo_key) => progress.start_repo(&repo_key),
+                ProgressEvent::Finished { repo_key, success } => {
+                    progress.finish_repo(&repo_key, success)
+                }
+            }
+        }
         progress.finish();
     }
 
+    let outcomes = worker
+        .join()
+        .map_err(|_| anyhow!("parallel worker thread panicked"))?;
+    let mut failures = 0_usize;
+    let mut fatal_error = None;
+    for outcome in outcomes {
+        if let Err(error) = outcome.result {
+            failures += 1;
+            if fatal_error.is_none() {
+                fatal_error = Some(error);
+            }
+        }
+    }
+
     store.finish_run(run_id)?;
+    if cmd.fail_fast {
+        if let Some(error) = fatal_error {
+            return Err(error);
+        }
+    }
     let summary = store.summarize_run(run_id)?;
     if cmd.json {
         println!("{}", summary_as_json(&summary)?);
@@ -201,6 +225,128 @@ fn run_command(cmd: RunCommand) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[derive(Debug)]
+struct RepoJobOutcome {
+    result: Result<()>,
+    failed: bool,
+}
+
+#[derive(Debug)]
+enum ProgressEvent {
+    Started(String),
+    Finished { repo_key: String, success: bool },
+}
+
+fn process_repo_job(
+    repo: pulse_core::RepoTarget,
+    layout: &StateLayout,
+    focus: &CompiledFocus,
+    focus_hash: &str,
+    ai_doc_matcher: Option<&CompiledFocus>,
+    with_history: bool,
+    progress_tx: Option<&mpsc::Sender<ProgressEvent>>,
+) -> RepoJobOutcome {
+    let repo_key = repo.key();
+    if let Some(tx) = progress_tx {
+        let _ = tx.send(ProgressEvent::Started(repo_key.clone()));
+    }
+
+    let result = (|| -> Result<()> {
+        let mut store = Store::open(layout)?;
+        store.upsert_repository(&repo)?;
+        if let Err(error) = process_repo(
+            &mut store,
+            layout,
+            &repo,
+            focus,
+            focus_hash,
+            ai_doc_matcher,
+            with_history,
+        ) {
+            store.record_failure(
+                &repo_key,
+                "run",
+                pulse_core::FailureClass::Permanent,
+                &error.to_string(),
+            )?;
+            return Err(error);
+        }
+        Ok(())
+    })();
+
+    if let Some(tx) = progress_tx {
+        let _ = tx.send(ProgressEvent::Finished {
+            repo_key,
+            success: result.is_ok(),
+        });
+    }
+
+    RepoJobOutcome {
+        failed: result.is_err(),
+        result,
+    }
+}
+
+fn run_parallel_jobs<T, R, F>(
+    items: Vec<T>,
+    concurrency: usize,
+    fail_fast: bool,
+    process: F,
+) -> Vec<R>
+where
+    T: Send + 'static,
+    R: Send + 'static,
+    F: Fn(T) -> (R, bool) + Send + Sync + 'static,
+{
+    let worker_count = items.len().min(concurrency.max(1));
+    if worker_count == 0 {
+        return Vec::new();
+    }
+
+    let queue = Arc::new(Mutex::new(std::collections::VecDeque::from(items)));
+    let results = Arc::new(Mutex::new(Vec::new()));
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let process = Arc::new(process);
+    let mut handles = Vec::with_capacity(worker_count);
+
+    for _ in 0..worker_count {
+        let queue = Arc::clone(&queue);
+        let results = Arc::clone(&results);
+        let cancelled = Arc::clone(&cancelled);
+        let process = Arc::clone(&process);
+        handles.push(thread::spawn(move || {
+            loop {
+                if cancelled.load(Ordering::Acquire) {
+                    break;
+                }
+                let next = {
+                    let mut queue = queue.lock().expect("job queue poisoned");
+                    queue.pop_front()
+                };
+                let Some(item) = next else {
+                    break;
+                };
+                let (result, failed) = process(item);
+                if failed && fail_fast {
+                    cancelled.store(true, Ordering::Release);
+                }
+                results.lock().expect("results poisoned").push(result);
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.join().expect("parallel job worker panicked");
+    }
+
+    let mut results = match Arc::try_unwrap(results) {
+        Ok(results) => results.into_inner().expect("parallel job results poisoned"),
+        Err(_) => panic!("parallel job results still shared"),
+    };
+    results.shrink_to_fit();
+    results
 }
 
 struct ProgressReporter {
@@ -670,6 +816,9 @@ fn is_empty_revision_message(message: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     #[test]
     fn chunks_git_paths_to_bounded_argument_lists() {
@@ -690,5 +839,27 @@ mod tests {
             "fatal: your current branch 'main' does not have any commits yet"
         ));
         assert!(!is_empty_revision_message("fatal: bad object deadbeef"));
+    }
+
+    #[test]
+    fn parallel_jobs_use_more_than_one_worker_when_concurrency_allows() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let jobs = vec![1_u8, 2, 3, 4];
+
+        let results = run_parallel_jobs(jobs, 4, false, {
+            let active = Arc::clone(&active);
+            let peak = Arc::clone(&peak);
+            move |job| {
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                let _ = peak.fetch_max(current, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(75));
+                active.fetch_sub(1, Ordering::SeqCst);
+                ((job, current), false)
+            }
+        });
+
+        assert_eq!(results.len(), 4);
+        assert!(peak.load(Ordering::SeqCst) > 1);
     }
 }

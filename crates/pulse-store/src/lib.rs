@@ -8,6 +8,7 @@ use pulse_core::{
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::time::Duration;
 
 pub struct Store {
     conn: Connection,
@@ -18,6 +19,7 @@ impl Store {
         layout.ensure()?;
         let conn = Connection::open(&layout.db_path)
             .with_context(|| format!("failed to open {}", layout.db_path.display()))?;
+        conn.busy_timeout(Duration::from_secs(30))?;
         let store = Self { conn };
         store.init_schema()?;
         Ok(store)
@@ -26,6 +28,8 @@ impl Store {
     pub fn init_schema(&self) -> Result<()> {
         self.conn.execute_batch(
             r#"
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
             PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
