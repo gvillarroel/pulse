@@ -93,7 +93,7 @@ Responsibilities:
 
 - Read only persisted state from `--state-dir`.
 - Build a self-contained HTML report.
-- Enrich the report with AI-document heuristics and optional config-driven AI-doc matching rules.
+- Aggregate and present metrics that were already computed and persisted by `pulse run`.
 
 Supported flags:
 
@@ -105,6 +105,7 @@ Supported flags:
 Current behavior constraints:
 
 - The report must not require refetching or reanalysis.
+- The report must not execute repository scans or Git history inspection.
 - The generated report should remain functional on Windows, including repositories with many AI-doc candidate paths.
 
 ## Repository Intake

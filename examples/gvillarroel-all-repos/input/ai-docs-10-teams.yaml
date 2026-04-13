@@ -1,0 +1,41 @@
+repositories:
+  csv: ./gvillarroel-repos-10-teams.csv
+analysis:
+  with_history: true
+focus:
+  include:
+    - AGENTS.md
+    - CLAUDE.md
+    - SPEC.md
+    - SPECS.md
+    - skills.md
+    - .github/copilot-instructions.md
+    - "**/AGENTS.md"
+    - "**/CLAUDE.md"
+    - "**/SKILL.md"
+    - "**/skills.md"
+    - "**/copilot-instructions.md"
+    - "**/*agent*.md"
+    - "**/*skill*.md"
+    - "**/*copilot*.md"
+    - "**/*prompt*.md"
+    - "**/*model*.md"
+report:
+  ai_docs:
+    include:
+      - AGENTS.md
+      - CLAUDE.md
+      - SPEC.md
+      - SPECS.md
+      - skills.md
+      - .github/copilot-instructions.md
+      - "**/AGENTS.md"
+      - "**/CLAUDE.md"
+      - "**/SKILL.md"
+      - "**/skills.md"
+      - "**/copilot-instructions.md"
+      - "**/*agent*.md"
+      - "**/*skill*.md"
+      - "**/*copilot*.md"
+      - "**/*prompt*.md"
+      - "**/*model*.md"

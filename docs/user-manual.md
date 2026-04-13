@@ -82,6 +82,8 @@ Optional columns supported by the current implementation:
 
 - `provider`
 - `owner`
+- `team`
+- `team_color`
 - `name`
 - `url`
 - `default_branch`
@@ -108,6 +110,8 @@ focus:
   exclude:
     - target/**
 ```
+
+You can also assign repositories to fixed reporting teams through the CSV or YAML input. When a `team` is present, reporting groups by that team instead of falling back to the repository owner.
 
 The repository also includes a sample YAML config under `fixtures/configs/pulse.sample.yaml`.
 

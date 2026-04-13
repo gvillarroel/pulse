@@ -30,6 +30,8 @@ pub struct RepositoryItem {
     pub provider: Option<String>,
     pub owner: Option<String>,
     pub owner_color: Option<String>,
+    pub team: Option<String>,
+    pub team_color: Option<String>,
     pub name: Option<String>,
     pub url: Option<String>,
     pub default_branch: Option<String>,

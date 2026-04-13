@@ -112,6 +112,8 @@ Suggested minimum output columns:
 - `provider`
 - `owner`
 - `owner_color`
+- `team`
+- `team_color`
 - `url`
 
 ## Command 2: Process Repositories
@@ -255,7 +257,7 @@ pulse report --state-dir ./state --title "My Company Engineering Portfolio"
 pulse report --config pulse.yaml --state-dir ./state
 ```
 
-When `--config` is provided, the report can define which files count as "AI Docs".
+When `--config` is provided, it may still supply presentation options, but it must not trigger fresh repository scanning or redefine metrics at render time.
 
 Example:
 
@@ -269,7 +271,7 @@ report:
       - archive/**
 ```
 
-If `report.ai_docs` is omitted, `pulse report` falls back to the built-in heuristic detection of agent, skill, prompt, copilot, model, and related markdown files.
+AI-document and similar derived signals must already have been computed by `pulse run` and persisted into the state directory before rendering.
 
 Expected flags:
 
@@ -284,3 +286,4 @@ Command contract:
 - exposes multiple dimensions such as overview, languages, repositories, history, and failures
 - keeps charts interactive so the operator can click through dimensions inside the same file
 - defaults to writing under `--state-dir/exports/report.html` when `--out` is not provided
+- does not walk repositories, read Git blobs, or execute new history scans during rendering

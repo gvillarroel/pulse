@@ -380,8 +380,8 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
       <section class="page active" id="page-overview">
         <div class="grid-2">
           <article class="panel">
-            <h2>Common AI Conventions By Owner</h2>
-            <p>Shared markdown contracts such as `AGENTS.md`, `SKILL.md`, `skills.md`, `SPEC.md`, and related files, broken down by owner.</p>
+            <h2>Common AI Conventions By Team</h2>
+            <p>Shared markdown contracts such as `AGENTS.md`, `SKILL.md`, `skills.md`, `SPEC.md`, and related files, broken down by team.</p>
             <div id="overview-ai-docs" class="chart tall"></div>
           </article>
           <article class="panel">
@@ -397,8 +397,8 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
             <div id="overview-ai-timeline" class="chart tall"></div>
           </article>
           <article class="panel">
-            <h2>Owners With AI Docs</h2>
-            <p>Repository count per owner where at least one AI convention was detected. Colors stay fixed across owner-oriented charts.</p>
+            <h2>Teams With AI Docs</h2>
+            <p>Repository count per team where at least one AI convention was detected. Colors stay fixed across team-oriented charts.</p>
             <div id="overview-owner-coverage" class="chart tall"></div>
           </article>
         </div>
@@ -425,17 +425,17 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
           <p>Filter by dominant language, repository name, or chart clicks from other sections.</p>
           <div class="filters">
             <span class="pill" id="repo-filter-doc">AI doc filter: all</span>
-            <span class="pill" id="repo-filter-owner">Owner filter: all</span>
+            <span class="pill" id="repo-filter-owner">Team filter: all</span>
             <span class="pill" id="repo-filter-language">Language filter: all</span>
             <span class="pill" id="repo-filter-selection">Selected repo: none</span>
           </div>
-          <input class="search" id="repo-search" type="search" placeholder="Filter repositories by name, owner, or language">
+          <input class="search" id="repo-search" type="search" placeholder="Filter repositories by name, team, owner, or language">
           <div class="table-wrap" style="margin-top: 14px;">
             <table>
               <thead>
                 <tr>
                   <th>Repository</th>
-                  <th>Owner</th>
+                  <th>Team</th>
                   <th>AI docs</th>
                   <th>Language</th>
                   <th>Files</th>
@@ -452,8 +452,8 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
       <section class="page" id="page-history">
         <div class="grid-2">
           <article class="panel">
-            <h2>Weekly Activity By Owner</h2>
-            <p>One cumulative line per owner, limited to the top 10 owners by total commit volume.</p>
+            <h2>Weekly Activity By Team</h2>
+            <p>One cumulative line per team, limited to the top 10 teams by total commit volume.</p>
             <div id="history-activity" class="chart tall"></div>
           </article>
           <article class="panel">
@@ -463,8 +463,8 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
           </article>
         </div>
         <article class="panel">
-          <h2>AI Doc Commits By Owner</h2>
-          <p>One cumulative line per owner for commits that touched files classified as AI docs.</p>
+          <h2>AI Doc Commits By Team</h2>
+          <p>One cumulative line per team for commits that touched files classified as AI docs.</p>
           <div id="history-ai-doc-owners" class="chart tall"></div>
         </article>
       </section>
@@ -549,12 +549,27 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
         return docsByRepo;
       }}
 
+      function repoGroup(repo) {{
+        return repo.team || repo.owner;
+      }}
+
+      function repoGroupColor(repo) {{
+        return repo.team_color || repo.owner_color;
+      }}
+
+      function overviewGroup(entry) {{
+        return entry.team || entry.owner;
+      }}
+
       const owners = (() => {{
         const byOwner = new Map();
         report.repositories.forEach((repo) => {{
-          const entry = byOwner.get(repo.owner) || {{
+          const group = repoGroup(repo);
+          const entry = byOwner.get(group) || {{
             owner: repo.owner,
             owner_color: repo.owner_color,
+            team: repo.team,
+            team_color: repo.team_color,
             repositories: 0,
             aiRepos: new Set(),
             totalFiles: 0,
@@ -563,30 +578,32 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
           entry.repositories += 1;
           entry.totalFiles += repo.total_files;
           entry.totalLines += repo.total_lines;
-          byOwner.set(repo.owner, entry);
+          byOwner.set(group, entry);
         }});
         report.ai_doc_occurrences.forEach((entry) => {{
           const repo = reposByKey.get(entry.repo_key);
           if (!repo) {{
             return;
           }}
-          byOwner.get(repo.owner)?.aiRepos.add(entry.repo_key);
+          byOwner.get(repoGroup(repo))?.aiRepos.add(entry.repo_key);
         }});
         return [...byOwner.values()]
           .map((entry) => ({{
             owner: entry.owner,
             owner_color: entry.owner_color,
+            team: entry.team,
+            team_color: entry.team_color,
             repositories: entry.repositories,
             aiRepositories: entry.aiRepos.size,
             totalFiles: entry.totalFiles,
             totalLines: entry.totalLines
           }}))
-          .sort((a, b) => b.repositories - a.repositories || a.owner.localeCompare(b.owner));
+          .sort((a, b) => b.repositories - a.repositories || overviewGroup(a).localeCompare(overviewGroup(b)));
       }})();
 
       const ownerColors = new Map(owners.map((entry, index) => [
-        entry.owner,
-        entry.owner_color || ownerPalette[index % ownerPalette.length]
+        overviewGroup(entry),
+        entry.team_color || entry.owner_color || ownerPalette[index % ownerPalette.length]
       ]));
 
       function ownerColor(owner) {{
@@ -621,7 +638,7 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
 
       function renderSummary() {{
         const visibleRepos = state.repoOwner
-          ? report.repositories.filter((repo) => repo.owner === state.repoOwner)
+          ? report.repositories.filter((repo) => repoGroup(repo) === state.repoOwner)
           : report.repositories;
         const visibleRepoKeys = new Set(visibleRepos.map((repo) => repo.repo_key));
         const visibleOccurrences = report.ai_doc_occurrences.filter((entry) => visibleRepoKeys.has(entry.repo_key));
@@ -633,14 +650,14 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
             .map((entry) => entry.repo_key)
         ).size;
         const visibleOwners = state.repoOwner
-          ? owners.filter((entry) => entry.owner === state.repoOwner)
+          ? owners.filter((entry) => overviewGroup(entry) === state.repoOwner)
           : owners;
         const largestOwner = visibleOwners[0];
         const failureCount = report.failures.filter((failure) => visibleRepoKeys.has(failure.repo_key)).length;
         const cards = [
-          ["Owners Processed", formatInt(visibleOwners.length)],
+          ["Teams Processed", formatInt(visibleOwners.length)],
           ["Repositories", formatInt(visibleRepos.length)],
-          ["Largest Owner", largestOwner ? `${{largestOwner.owner}} · ${{formatInt(largestOwner.repositories)}} repos` : "n/a"],
+          ["Largest Team", largestOwner ? `${{overviewGroup(largestOwner)}} · ${{formatInt(largestOwner.repositories)}} repos` : "n/a"],
           ["Repos With AI Docs", formatInt(aiRepos)],
           [`Unique AI Docs (${{state.aiDocGrouping === "path" ? "path" : "name"}})`, formatInt(uniqueAiDocs)],
           ["Repos With AGENTS.md", formatInt(agents)],
@@ -658,16 +675,16 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
         const container = document.getElementById("owner-filters");
         const allButton = `
           <button class="owner-button ${{state.repoOwner ? "" : "active"}}" data-owner="">
-            All owners
+            All teams
           </button>
         `;
         const ownerButtons = owners.map((entry) => `
           <button
-            class="owner-button ${{state.repoOwner === entry.owner ? "active" : ""}}"
-            data-owner="${{entry.owner}}"
-            style="background:${{state.repoOwner === entry.owner ? ownerColor(entry.owner) : "#ffffff"}}; border-color:${{ownerColor(entry.owner)}};"
+            class="owner-button ${{state.repoOwner === overviewGroup(entry) ? "active" : ""}}"
+            data-owner="${{overviewGroup(entry)}}"
+            style="background:${{state.repoOwner === overviewGroup(entry) ? ownerColor(overviewGroup(entry)) : "#ffffff"}}; border-color:${{ownerColor(overviewGroup(entry))}};"
           >
-            ${{entry.owner}}
+            ${{overviewGroup(entry)}}
           </button>
         `).join("");
         container.innerHTML = allButton + ownerButtons;
@@ -707,7 +724,7 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
         const selectionLabel = document.getElementById("repo-filter-selection");
         const docsByRepo = docsByRepoMap();
         docLabel.textContent = `AI doc filter: ${{state.repoDoc || "all"}}`;
-        ownerLabel.textContent = `Owner filter: ${{state.repoOwner || "all"}}`;
+        ownerLabel.textContent = `Team filter: ${{state.repoOwner || "all"}}`;
         languageLabel.textContent = `Language filter: ${{state.repoLanguage || "all"}}`;
         selectionLabel.textContent = `Selected repo: ${{state.selectedRepo || "none"}}`;
 
@@ -717,7 +734,7 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
           if (state.repoDoc && !repoDocs.includes(state.repoDoc)) {{
             return false;
           }}
-          if (state.repoOwner && repo.owner !== state.repoOwner) {{
+          if (state.repoOwner && repoGroup(repo) !== state.repoOwner) {{
             return false;
           }}
           if (state.repoLanguage && repo.dominant_language !== state.repoLanguage) {{
@@ -729,14 +746,14 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
           if (!term) {{
             return true;
           }}
-          const haystack = `${{repo.repo_key}} ${{repo.owner}} ${{repo.name}} ${{repo.dominant_language}} ${{repoDocs.join(" ")}}`.toLowerCase();
+          const haystack = `${{repo.repo_key}} ${{repoGroup(repo)}} ${{repo.owner}} ${{repo.name}} ${{repo.dominant_language}} ${{repoDocs.join(" ")}}`.toLowerCase();
           return haystack.includes(term);
         }});
 
         body.innerHTML = filtered.map((repo) => `
           <tr>
             <td class="mono">${{repo.repo_key}}</td>
-            <td>${{repo.owner}}</td>
+            <td>${{repoGroup(repo)}}</td>
             <td>${{[...new Set(docsByRepo.get(repo.repo_key) || [])].join(", ") || "none"}}</td>
             <td>${{repo.dominant_language}}</td>
             <td>${{formatInt(repo.total_files)}}</td>
@@ -784,11 +801,11 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
 
       function renderCharts() {{
         const visibleRepos = state.repoOwner
-          ? report.repositories.filter((repo) => repo.owner === state.repoOwner)
+          ? report.repositories.filter((repo) => repoGroup(repo) === state.repoOwner)
           : report.repositories;
         const visibleRepoKeys = new Set(visibleRepos.map((repo) => repo.repo_key));
         const visibleOwners = state.repoOwner
-          ? owners.filter((entry) => entry.owner === state.repoOwner)
+          ? owners.filter((entry) => overviewGroup(entry) === state.repoOwner)
           : owners;
         const visibleOccurrences = report.ai_doc_occurrences.filter((entry) => visibleRepoKeys.has(entry.repo_key));
         const aiSummaryMap = new Map();
@@ -856,7 +873,7 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
           if (!repo) {{
             return;
           }}
-          const key = `${{repo.owner}}::${{aiDocKey(entry)}}`;
+          const key = `${{repoGroup(repo)}}::${{aiDocKey(entry)}}`;
           aiDocCountsByOwner.set(key, (aiDocCountsByOwner.get(key) || 0) + 1);
         }});
 
@@ -864,10 +881,10 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
           type: "bar",
           orientation: "h",
           x: [...visibleOwners].reverse().map((entry) => entry.repositories),
-          y: [...visibleOwners].reverse().map((entry) => entry.owner),
-          customdata: [...visibleOwners].reverse().map((entry) => entry.owner),
+          y: [...visibleOwners].reverse().map((entry) => overviewGroup(entry)),
+          customdata: [...visibleOwners].reverse().map((entry) => overviewGroup(entry)),
           marker: {{
-            color: [...visibleOwners].reverse().map((entry) => ownerColor(entry.owner))
+            color: [...visibleOwners].reverse().map((entry) => ownerColor(overviewGroup(entry)))
           }},
           text: [...visibleOwners].reverse().map((entry) => `${{entry.repositories}} repos`),
           textposition: "outside",
@@ -883,12 +900,12 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
         Plotly.newPlot("overview-ai-docs", visibleOwners.map((ownerEntry) => ({{
           type: "bar",
           orientation: "h",
-          name: ownerEntry.owner,
-          x: aiSummaries.map((entry) => aiDocCountsByOwner.get(`${{ownerEntry.owner}}::${{entry.key}}`) || 0),
+          name: overviewGroup(ownerEntry),
+          x: aiSummaries.map((entry) => aiDocCountsByOwner.get(`${{overviewGroup(ownerEntry)}}::${{entry.key}}`) || 0),
           y: aiSummaries.map((entry) => entry.doc_name),
-          customdata: aiSummaries.map((entry) => [entry.doc_name, ownerEntry.owner]),
+          customdata: aiSummaries.map((entry) => [entry.doc_name, overviewGroup(ownerEntry)]),
           marker: {{
-            color: ownerColor(ownerEntry.owner)
+            color: ownerColor(overviewGroup(ownerEntry))
           }},
           hovertemplate: "%{{y}}<br>%{{x}} files for %{{data.name}}<extra></extra>"
         }})), {{
@@ -941,10 +958,10 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
             type: "bar",
             orientation: "h",
             x: [...visibleOwners].reverse().map((entry) => entry.aiRepositories),
-            y: [...visibleOwners].reverse().map((entry) => entry.owner),
-            customdata: [...visibleOwners].reverse().map((entry) => entry.owner),
+            y: [...visibleOwners].reverse().map((entry) => overviewGroup(entry)),
+            customdata: [...visibleOwners].reverse().map((entry) => overviewGroup(entry)),
             marker: {{
-              color: [...visibleOwners].reverse().map((entry) => ownerColor(entry.owner))
+              color: [...visibleOwners].reverse().map((entry) => ownerColor(overviewGroup(entry)))
             }},
             text: [...visibleOwners].reverse().map((entry) => `${{entry.aiRepositories}} / ${{entry.repositories}}`),
             textposition: "outside",
@@ -995,10 +1012,11 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
         const topHistoryOwners = (() => {{
           const totals = new Map();
           report.owner_weekly_overview.forEach((entry) => {{
-            if (state.repoOwner && entry.owner !== state.repoOwner) {{
+            const group = overviewGroup(entry);
+            if (state.repoOwner && group !== state.repoOwner) {{
               return;
             }}
-            totals.set(entry.owner, (totals.get(entry.owner) || 0) + entry.commits);
+            totals.set(group, (totals.get(group) || 0) + entry.commits);
           }});
           return [...totals.entries()]
             .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
@@ -1008,7 +1026,7 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
 
         const ownerActivitySeries = topHistoryOwners
           .map((owner) => {{
-            const rows = report.owner_weekly_overview.filter((entry) => entry.owner === owner);
+            const rows = report.owner_weekly_overview.filter((entry) => overviewGroup(entry) === owner);
             let runningTotal = 0;
             return {{
               type: "scatter",
@@ -1051,18 +1069,18 @@ pub fn report_as_html(title: &str, generated_at: &str, dataset: &ReportDataset) 
 
         const aiDocOwnerSeries = visibleOwners
           .map((ownerEntry) => {{
-            const rows = report.ai_doc_owner_weekly.filter((entry) => entry.owner === ownerEntry.owner);
+            const rows = report.ai_doc_owner_weekly.filter((entry) => overviewGroup(entry) === overviewGroup(ownerEntry));
             let runningTotal = 0;
             return {{
               type: "scatter",
               mode: "lines",
-              name: ownerEntry.owner,
+              name: overviewGroup(ownerEntry),
               x: rows.map((entry) => entry.week_start),
               y: rows.map((entry) => {{
                 runningTotal += entry.commits;
                 return runningTotal;
               }}),
-              line: {{ color: ownerColor(ownerEntry.owner), width: 3 }}
+              line: {{ color: ownerColor(overviewGroup(ownerEntry)), width: 3 }}
             }};
           }})
           .filter((entry) => entry.x.length > 0);

@@ -4,16 +4,16 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use pulse_analyze::analyze_revision;
 use pulse_config::{AppConfig, load as load_config};
 use pulse_core::{
-    AiDocLinkSummary, AiDocOccurrence, AiDocOwnerWeekly, AiDocSummary, AiDocTimelinePoint,
-    CompiledFocus, FocusConfig, ReportDataset, StageStatus, StateLayout, WeeklyEvolution,
+    AiDocOccurrence, CompiledFocus, FocusConfig, StageStatus, StateLayout, WeeklyEvolution,
     config_hash,
 };
 use pulse_export::{report_as_html, summary_as_json, targets_as_csv, targets_as_json};
 use pulse_fetch::{EMPTY_REPOSITORY_REVISION, fetch_repo, file_content, list_tree};
 use pulse_input::resolve_targets;
 use pulse_store::Store;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -130,6 +130,7 @@ fn list_command(cmd: ListCommand) -> Result<()> {
 fn run_command(cmd: RunCommand) -> Result<()> {
     let config = maybe_load_config(cmd.input.config.as_deref())?;
     let targets = resolve_targets(config.as_ref(), cmd.input.input.as_deref())?;
+    let total_targets = targets.len();
     let layout = StateLayout::new(&cmd.state_dir);
     let mut store = Store::open(&layout)?;
     let run_id = store.begin_run("pulse run")?;
@@ -137,11 +138,22 @@ fn run_command(cmd: RunCommand) -> Result<()> {
     let focus = merged_focus(config.as_ref(), &cmd.focus, cmd.focus_file.as_deref())?;
     let compiled_focus = focus.compile()?;
     let focus_hash = config_hash(&focus)?;
+    let ai_docs = config
+        .as_ref()
+        .map(|cfg| cfg.report.ai_docs.clone())
+        .unwrap_or_default();
+    let ai_doc_matcher = if ai_docs.include.is_empty() && ai_docs.exclude.is_empty() {
+        None
+    } else {
+        Some(ai_docs.compile()?)
+    };
 
     let mut failures = 0_usize;
+    let mut progress = cmd.progress.then(|| ProgressReporter::new(total_targets));
     for repo in targets {
-        if cmd.progress {
-            eprintln!("processing {}", repo.key());
+        let repo_key = repo.key();
+        if let Some(progress) = progress.as_mut() {
+            progress.start_repo(&repo_key);
         }
         store.upsert_repository(&repo)?;
         if let Err(error) = process_repo(
@@ -150,6 +162,7 @@ fn run_command(cmd: RunCommand) -> Result<()> {
             &repo,
             &compiled_focus,
             &focus_hash,
+            ai_doc_matcher.as_ref(),
             cmd.with_history
                 || config
                     .as_ref()
@@ -158,15 +171,23 @@ fn run_command(cmd: RunCommand) -> Result<()> {
         ) {
             failures += 1;
             store.record_failure(
-                &repo.key(),
+                &repo_key,
                 "run",
                 pulse_core::FailureClass::Permanent,
                 &error.to_string(),
             )?;
+            if let Some(progress) = progress.as_mut() {
+                progress.finish_repo(&repo_key, false);
+            }
             if cmd.fail_fast {
                 return Err(error);
             }
+        } else if let Some(progress) = progress.as_mut() {
+            progress.finish_repo(&repo_key, true);
         }
+    }
+    if let Some(progress) = progress.as_mut() {
+        progress.finish();
     }
 
     store.finish_run(run_id)?;
@@ -182,26 +203,85 @@ fn run_command(cmd: RunCommand) -> Result<()> {
     Ok(())
 }
 
+struct ProgressReporter {
+    total: usize,
+    completed: usize,
+    failed: usize,
+    interactive: bool,
+}
+
+impl ProgressReporter {
+    fn new(total: usize) -> Self {
+        Self {
+            total,
+            completed: 0,
+            failed: 0,
+            interactive: io::stderr().is_terminal(),
+        }
+    }
+
+    fn start_repo(&mut self, repo_key: &str) {
+        self.render(Some(repo_key), None);
+    }
+
+    fn finish_repo(&mut self, repo_key: &str, success: bool) {
+        self.completed += 1;
+        if !success {
+            self.failed += 1;
+        }
+        let status = if success { "done" } else { "failed" };
+        self.render(Some(repo_key), Some(status));
+        if !self.interactive {
+            let _ = writeln!(io::stderr());
+        }
+    }
+
+    fn finish(&mut self) {
+        if self.interactive {
+            let _ = writeln!(io::stderr());
+        }
+    }
+
+    fn render(&self, repo_key: Option<&str>, status: Option<&str>) {
+        let processed = self.completed.min(self.total);
+        let remaining = self.total.saturating_sub(processed);
+        let percentage = if self.total == 0 {
+            100
+        } else {
+            (processed * 100) / self.total
+        };
+        let width = 24;
+        let filled = if self.total == 0 {
+            width
+        } else {
+            (processed * width) / self.total
+        };
+        let bar = format!(
+            "{}{}",
+            "#".repeat(filled),
+            "-".repeat(width.saturating_sub(filled))
+        );
+        let repo_label = repo_key.unwrap_or("idle");
+        let status_label = status.unwrap_or("running");
+        let message = format!(
+            "[{bar}] {processed}/{total} ({percentage:>3}%) remaining={remaining} failed={} {status_label} {repo_label}",
+            self.failed,
+            total = self.total
+        );
+
+        if self.interactive {
+            let _ = write!(io::stderr(), "\r{message}");
+            let _ = io::stderr().flush();
+        } else {
+            let _ = write!(io::stderr(), "{message}");
+        }
+    }
+}
+
 fn report_command(cmd: ReportCommand) -> Result<()> {
-    let config = maybe_load_config(cmd.config.as_deref())?;
     let layout = StateLayout::new(&cmd.state_dir);
     let store = Store::open(&layout)?;
-    let mut dataset = store.build_report_dataset()?;
-    let ai_docs = config
-        .as_ref()
-        .map(|cfg| cfg.report.ai_docs.clone())
-        .unwrap_or_default();
-    let ai_doc_matcher = if ai_docs.include.is_empty() && ai_docs.exclude.is_empty() {
-        None
-    } else {
-        Some(ai_docs.compile()?)
-    };
-    enrich_ai_report(
-        &mut dataset,
-        &store,
-        &cmd.state_dir,
-        ai_doc_matcher.as_ref(),
-    )?;
+    let dataset = store.build_report_dataset()?;
     let output_path = cmd
         .out
         .unwrap_or_else(|| layout.exports_dir.join("report.html"));
@@ -221,178 +301,6 @@ fn report_command(cmd: ReportCommand) -> Result<()> {
     fs::write(&output_path, html)
         .with_context(|| format!("failed to write {}", output_path.display()))?;
     println!("{}", output_path.display());
-    Ok(())
-}
-
-fn enrich_ai_report(
-    dataset: &mut ReportDataset,
-    store: &Store,
-    state_dir: &Path,
-    ai_doc_matcher: Option<&CompiledFocus>,
-) -> Result<()> {
-    let repo_heads = store.fetch_outcomes()?;
-    let latest_paths = store.latest_file_paths()?;
-    let mut candidate_paths_by_repo: HashMap<String, Vec<String>> = HashMap::new();
-    for (repo_key, path) in latest_paths {
-        if ai_doc_category(&path, ai_doc_matcher).is_some() {
-            candidate_paths_by_repo
-                .entry(repo_key)
-                .or_default()
-                .push(path);
-        }
-    }
-
-    let total_repositories = dataset.summary.repositories.max(1) as f64;
-    let mut occurrences = Vec::new();
-    let mut by_doc: HashMap<(String, String), (HashSet<String>, u64)> = HashMap::new();
-    let mut by_link: HashMap<(String, String), HashSet<String>> = HashMap::new();
-    let mut timeline_seed: HashMap<(String, String), BTreeMap<String, HashSet<String>>> =
-        HashMap::new();
-    let repo_owner: HashMap<String, String> = dataset
-        .repositories
-        .iter()
-        .map(|repo| (repo.repo_key.clone(), repo.owner.clone()))
-        .collect();
-    let mut owner_weekly_ai_doc_commits: HashMap<(String, String), u64> = HashMap::new();
-
-    for fetch in repo_heads {
-        let Some(paths) = candidate_paths_by_repo.get(&fetch.repo_key) else {
-            continue;
-        };
-        if fetch.fetched_revision == EMPTY_REPOSITORY_REVISION {
-            continue;
-        }
-        let git_dir = resolve_git_dir(&fetch.git_dir, state_dir);
-        let owner = repo_owner
-            .get(&fetch.repo_key)
-            .cloned()
-            .unwrap_or_else(|| "unknown".to_string());
-        let weekly_ai_doc_commits = build_ai_doc_commit_history(&git_dir, paths)?;
-        for (week_start, commits) in weekly_ai_doc_commits {
-            *owner_weekly_ai_doc_commits
-                .entry((owner.clone(), week_start))
-                .or_default() += commits;
-        }
-        for path in paths {
-            let Some(category) = ai_doc_category(path, ai_doc_matcher) else {
-                continue;
-            };
-            let doc_name = file_name_lower(path);
-            let linked_docs =
-                read_markdown_links(&git_dir, &fetch.fetched_revision, path).unwrap_or_default();
-            for linked_doc in &linked_docs {
-                by_link
-                    .entry((doc_name.clone(), linked_doc.clone()))
-                    .or_default()
-                    .insert(fetch.repo_key.clone());
-            }
-
-            if let Some(date) = first_addition_date(&git_dir, &fetch.fetched_revision, path)? {
-                let week = week_start_string(date)?;
-                timeline_seed
-                    .entry((doc_name.clone(), path.clone()))
-                    .or_default()
-                    .entry(week)
-                    .or_default()
-                    .insert(fetch.repo_key.clone());
-            }
-
-            by_doc
-                .entry((doc_name.clone(), category.to_string()))
-                .and_modify(|(repos, files)| {
-                    repos.insert(fetch.repo_key.clone());
-                    *files += 1;
-                })
-                .or_insert_with(|| {
-                    let mut repos = HashSet::new();
-                    repos.insert(fetch.repo_key.clone());
-                    (repos, 1)
-                });
-
-            occurrences.push(AiDocOccurrence {
-                repo_key: fetch.repo_key.clone(),
-                doc_name,
-                category: category.to_string(),
-                path: path.clone(),
-                linked_docs,
-            });
-        }
-    }
-
-    let mut summaries = by_doc
-        .into_iter()
-        .map(|((doc_name, category), (repos, files))| AiDocSummary {
-            doc_name,
-            category,
-            repositories: repos.len() as u64,
-            files,
-            adoption_pct: (repos.len() as f64 / total_repositories) * 100.0,
-        })
-        .collect::<Vec<_>>();
-    summaries.sort_by(|a, b| {
-        b.repositories
-            .cmp(&a.repositories)
-            .then_with(|| a.doc_name.cmp(&b.doc_name))
-    });
-
-    let mut links = by_link
-        .into_iter()
-        .map(|((source_doc, linked_doc), repos)| AiDocLinkSummary {
-            source_doc,
-            linked_doc,
-            repositories: repos.len() as u64,
-            adoption_pct: (repos.len() as f64 / total_repositories) * 100.0,
-        })
-        .collect::<Vec<_>>();
-    links.sort_by(|a, b| {
-        b.repositories
-            .cmp(&a.repositories)
-            .then_with(|| a.source_doc.cmp(&b.source_doc))
-            .then_with(|| a.linked_doc.cmp(&b.linked_doc))
-    });
-
-    let mut timeline = Vec::new();
-    for ((doc_name, path), by_week) in timeline_seed {
-        let mut seen = HashSet::new();
-        for (week_start, repos) in by_week {
-            seen.extend(repos);
-            timeline.push(AiDocTimelinePoint {
-                week_start,
-                doc_name: doc_name.clone(),
-                path: path.clone(),
-                cumulative_repositories: seen.len() as u64,
-            });
-        }
-    }
-    timeline.sort_by(|a, b| {
-        a.week_start
-            .cmp(&b.week_start)
-            .then_with(|| a.doc_name.cmp(&b.doc_name))
-            .then_with(|| a.path.cmp(&b.path))
-    });
-
-    occurrences.sort_by(|a, b| {
-        a.repo_key
-            .cmp(&b.repo_key)
-            .then_with(|| a.path.cmp(&b.path))
-    });
-    dataset.ai_doc_summaries = summaries;
-    dataset.ai_doc_occurrences = occurrences;
-    dataset.ai_doc_links = links;
-    dataset.ai_doc_timeline = timeline;
-    dataset.ai_doc_owner_weekly = owner_weekly_ai_doc_commits
-        .into_iter()
-        .map(|((owner, week_start), commits)| AiDocOwnerWeekly {
-            owner,
-            week_start,
-            commits,
-        })
-        .collect::<Vec<_>>();
-    dataset.ai_doc_owner_weekly.sort_by(|a, b| {
-        a.week_start
-            .cmp(&b.week_start)
-            .then_with(|| a.owner.cmp(&b.owner))
-    });
     Ok(())
 }
 
@@ -434,28 +342,6 @@ fn file_name_lower(path: &str) -> String {
         .file_name()
         .map(|value| value.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_else(|| path.to_ascii_lowercase())
-}
-
-fn resolve_git_dir(git_dir: &Path, state_dir: &Path) -> PathBuf {
-    if git_dir.is_absolute() && git_dir.exists() {
-        return git_dir.to_path_buf();
-    }
-    let candidates = [
-        git_dir.to_path_buf(),
-        state_dir.join(git_dir),
-        state_dir
-            .parent()
-            .map(|base| base.join(git_dir))
-            .unwrap_or_else(|| git_dir.to_path_buf()),
-        state_dir
-            .parent()
-            .and_then(|base| base.parent().map(|grand| grand.join(git_dir)))
-            .unwrap_or_else(|| git_dir.to_path_buf()),
-    ];
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.exists())
-        .unwrap_or_else(|| git_dir.to_path_buf())
 }
 
 fn read_markdown_links(git_dir: &Path, revision: &str, path: &str) -> Result<Vec<String>> {
@@ -538,6 +424,7 @@ fn process_repo(
     repo: &pulse_core::RepoTarget,
     focus: &CompiledFocus,
     focus_hash: &str,
+    ai_doc_matcher: Option<&CompiledFocus>,
     with_history: bool,
 ) -> Result<()> {
     store.set_stage_status(&repo.key(), "fetch", StageStatus::Running, None)?;
@@ -546,6 +433,7 @@ fn process_repo(
     store.set_stage_status(&repo.key(), "fetch", StageStatus::Completed, None)?;
 
     let current_hash = store.existing_snapshot_config_hash(&repo.key(), &fetch.fetched_revision)?;
+    let mut latest_paths = None;
     if current_hash.as_deref() != Some(focus_hash) {
         store.set_stage_status(&repo.key(), "analyze", StageStatus::Running, None)?;
         let tree = list_tree(&fetch.git_dir, &fetch.fetched_revision)?;
@@ -566,6 +454,12 @@ fn process_repo(
             focus,
             focus_hash,
         )?;
+        latest_paths = Some(
+            file_snapshots
+                .iter()
+                .map(|snapshot| snapshot.path.clone())
+                .collect::<Vec<_>>(),
+        );
         store.persist_snapshot(&repo_snapshot, &file_snapshots)?;
         let analyze_detail =
             (skipped_reads > 0).then(|| format!("skipped {skipped_reads} unreadable tree entries"));
@@ -576,6 +470,23 @@ fn process_repo(
             analyze_detail.as_deref(),
         )?;
     }
+
+    let ai_doc_paths = latest_paths
+        .unwrap_or(store.file_paths_for_revision(&repo.key(), &fetch.fetched_revision)?)
+        .into_iter()
+        .filter(|path| ai_doc_category(path, ai_doc_matcher).is_some())
+        .collect::<Vec<_>>();
+    let ai_doc_occurrences = build_ai_doc_occurrences(
+        &fetch.git_dir,
+        &fetch.fetched_revision,
+        &repo.key(),
+        &ai_doc_paths,
+        ai_doc_matcher,
+    )?;
+    let ai_doc_weekly_activity = build_ai_doc_commit_history(&fetch.git_dir, &ai_doc_paths)?
+        .into_iter()
+        .collect::<Vec<_>>();
+    store.replace_ai_doc_analysis(&repo.key(), &ai_doc_occurrences, &ai_doc_weekly_activity)?;
 
     if with_history {
         store.set_stage_status(&repo.key(), "history", StageStatus::Running, None)?;
@@ -606,6 +517,38 @@ fn merged_focus(
         }
     }
     Ok(focus)
+}
+
+fn build_ai_doc_occurrences(
+    git_dir: &Path,
+    revision: &str,
+    repo_key: &str,
+    paths: &[String],
+    ai_doc_matcher: Option<&CompiledFocus>,
+) -> Result<Vec<AiDocOccurrence>> {
+    let mut occurrences = Vec::new();
+    for path in paths {
+        let Some(category) = ai_doc_category(path, ai_doc_matcher) else {
+            continue;
+        };
+        let first_seen_week_start = first_addition_date(git_dir, revision, path)?
+            .map(week_start_string)
+            .transpose()?;
+        occurrences.push(AiDocOccurrence {
+            repo_key: repo_key.to_string(),
+            doc_name: file_name_lower(path),
+            category: category.to_string(),
+            path: path.clone(),
+            first_seen_week_start,
+            linked_docs: read_markdown_links(git_dir, revision, path).unwrap_or_default(),
+        });
+    }
+    occurrences.sort_by(|a, b| {
+        a.repo_key
+            .cmp(&b.repo_key)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    Ok(occurrences)
 }
 
 fn build_weekly_history(git_dir: &Path, repo_key: &str) -> Result<Vec<WeeklyEvolution>> {

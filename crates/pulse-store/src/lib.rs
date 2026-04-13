@@ -1,10 +1,12 @@
 use anyhow::{Context, Result};
 use pulse_core::{
+    AiDocLinkSummary, AiDocOccurrence, AiDocOwnerWeekly, AiDocSummary, AiDocTimelinePoint,
     ExtensionBreakdown, FailureClass, FailureRecord, FetchOutcome, FileSnapshot, LanguageBreakdown,
     OwnerWeeklyOverview, RepoOverview, RepoSnapshot, RepoTarget, ReportDataset, ReportSummary,
     RunSummary, StageStatus, StageStatusCount, StateLayout, WeeklyEvolution, WeeklyOverview,
 };
 use rusqlite::{Connection, OptionalExtension, params};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 pub struct Store {
@@ -36,6 +38,8 @@ impl Store {
                 provider TEXT NOT NULL,
                 owner TEXT NOT NULL,
                 owner_color TEXT,
+                team TEXT,
+                team_color TEXT,
                 name TEXT NOT NULL,
                 url TEXT NOT NULL,
                 default_branch TEXT,
@@ -107,9 +111,32 @@ impl Store {
                 path TEXT NOT NULL,
                 PRIMARY KEY (repo_key, artifact_kind, path)
             );
+            CREATE TABLE IF NOT EXISTS ai_doc_occurrences (
+                repo_key TEXT NOT NULL,
+                path TEXT NOT NULL,
+                doc_name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                first_seen_week_start TEXT,
+                PRIMARY KEY (repo_key, path)
+            );
+            CREATE TABLE IF NOT EXISTS ai_doc_links (
+                repo_key TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                source_doc TEXT NOT NULL,
+                linked_doc TEXT NOT NULL,
+                PRIMARY KEY (repo_key, source_path, linked_doc)
+            );
+            CREATE TABLE IF NOT EXISTS ai_doc_weekly_activity (
+                repo_key TEXT NOT NULL,
+                week_start TEXT NOT NULL,
+                commits INTEGER NOT NULL,
+                PRIMARY KEY (repo_key, week_start)
+            );
         "#,
         )?;
         self.ensure_column("repositories", "owner_color", "TEXT")?;
+        self.ensure_column("repositories", "team", "TEXT")?;
+        self.ensure_column("repositories", "team_color", "TEXT")?;
         Ok(())
     }
 
@@ -147,12 +174,14 @@ impl Store {
     pub fn upsert_repository(&self, repo: &RepoTarget) -> Result<()> {
         self.conn.execute(
             r#"
-            INSERT INTO repositories (repo_key, provider, owner, owner_color, name, url, default_branch, active)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            INSERT INTO repositories (repo_key, provider, owner, owner_color, team, team_color, name, url, default_branch, active)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ON CONFLICT(repo_key) DO UPDATE SET
                 provider=excluded.provider,
                 owner=excluded.owner,
                 owner_color=excluded.owner_color,
+                team=excluded.team,
+                team_color=excluded.team_color,
                 name=excluded.name,
                 url=excluded.url,
                 default_branch=excluded.default_branch,
@@ -163,6 +192,8 @@ impl Store {
                 repo.provider,
                 repo.owner,
                 repo.owner_color,
+                repo.team,
+                repo.team_color,
                 repo.name,
                 repo.url,
                 repo.default_branch,
@@ -418,6 +449,88 @@ impl Store {
             .map_err(Into::into)
     }
 
+    pub fn file_paths_for_revision(&self, repo_key: &str, revision: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT path
+            FROM file_snapshots
+            WHERE repo_key = ?1 AND revision = ?2
+            ORDER BY path ASC
+            "#,
+        )?;
+        let rows = stmt.query_map(params![repo_key, revision], |row| row.get(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub fn replace_ai_doc_analysis(
+        &mut self,
+        repo_key: &str,
+        occurrences: &[AiDocOccurrence],
+        weekly_activity: &[(String, u64)],
+    ) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM ai_doc_links WHERE repo_key = ?1",
+            params![repo_key],
+        )?;
+        tx.execute(
+            "DELETE FROM ai_doc_occurrences WHERE repo_key = ?1",
+            params![repo_key],
+        )?;
+        tx.execute(
+            "DELETE FROM ai_doc_weekly_activity WHERE repo_key = ?1",
+            params![repo_key],
+        )?;
+
+        for occurrence in occurrences {
+            tx.execute(
+                r#"
+                INSERT INTO ai_doc_occurrences
+                (repo_key, path, doc_name, category, first_seen_week_start)
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                "#,
+                params![
+                    occurrence.repo_key,
+                    occurrence.path,
+                    occurrence.doc_name,
+                    occurrence.category,
+                    occurrence.first_seen_week_start
+                ],
+            )?;
+
+            for linked_doc in &occurrence.linked_docs {
+                tx.execute(
+                    r#"
+                    INSERT INTO ai_doc_links
+                    (repo_key, source_path, source_doc, linked_doc)
+                    VALUES (?1, ?2, ?3, ?4)
+                    "#,
+                    params![
+                        occurrence.repo_key,
+                        occurrence.path,
+                        occurrence.doc_name,
+                        linked_doc
+                    ],
+                )?;
+            }
+        }
+
+        for (week_start, commits) in weekly_activity {
+            tx.execute(
+                r#"
+                INSERT INTO ai_doc_weekly_activity
+                (repo_key, week_start, commits)
+                VALUES (?1, ?2, ?3)
+                "#,
+                params![repo_key, week_start, *commits as i64],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn build_report_dataset(&self) -> Result<ReportDataset> {
         Ok(ReportDataset {
             summary: self.report_summary()?,
@@ -428,11 +541,11 @@ impl Store {
             owner_weekly_overview: self.owner_weekly_overview()?,
             failures: self.failures()?,
             stage_statuses: self.stage_status_counts()?,
-            ai_doc_summaries: Vec::new(),
-            ai_doc_occurrences: Vec::new(),
-            ai_doc_links: Vec::new(),
-            ai_doc_timeline: Vec::new(),
-            ai_doc_owner_weekly: Vec::new(),
+            ai_doc_summaries: self.ai_doc_summaries()?,
+            ai_doc_occurrences: self.ai_doc_occurrences()?,
+            ai_doc_links: self.ai_doc_links()?,
+            ai_doc_timeline: self.ai_doc_timeline()?,
+            ai_doc_owner_weekly: self.ai_doc_owner_weekly()?,
         })
     }
 
@@ -554,6 +667,8 @@ impl Store {
             SELECT latest.repo_key,
                    repositories.owner,
                    repositories.owner_color,
+                   repositories.team,
+                   repositories.team_color,
                    repositories.name,
                    latest.total_files,
                    latest.total_bytes,
@@ -573,11 +688,13 @@ impl Store {
                 repo_key: row.get(0)?,
                 owner: row.get(1)?,
                 owner_color: row.get(2)?,
-                name: row.get(3)?,
-                total_files: row.get::<_, i64>(4)? as u64,
-                total_bytes: row.get::<_, i64>(5)? as u64,
-                total_lines: row.get::<_, i64>(6)? as u64,
-                dominant_language: row.get(7)?,
+                team: row.get(3)?,
+                team_color: row.get(4)?,
+                name: row.get(5)?,
+                total_files: row.get::<_, i64>(6)? as u64,
+                total_bytes: row.get::<_, i64>(7)? as u64,
+                total_lines: row.get::<_, i64>(8)? as u64,
+                dominant_language: row.get(9)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -612,6 +729,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             r#"
             SELECT repositories.owner,
+                   repositories.team,
                    weekly_evolution.week_start,
                    COALESCE(SUM(weekly_evolution.commit_count), 0) AS commits,
                    COUNT(DISTINCT weekly_evolution.repo_key) AS active_repositories,
@@ -619,17 +737,182 @@ impl Store {
             FROM weekly_evolution
             INNER JOIN repositories
                 ON repositories.repo_key = weekly_evolution.repo_key
-            GROUP BY repositories.owner, weekly_evolution.week_start
-            ORDER BY weekly_evolution.week_start ASC, repositories.owner ASC
+            GROUP BY repositories.owner, repositories.team, weekly_evolution.week_start
+            ORDER BY weekly_evolution.week_start ASC, repositories.team ASC, repositories.owner ASC
             "#,
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(OwnerWeeklyOverview {
                 owner: row.get(0)?,
-                week_start: row.get(1)?,
-                commits: row.get::<_, i64>(2)? as u64,
-                active_repositories: row.get::<_, i64>(3)? as u64,
-                contributor_instances: row.get::<_, i64>(4)? as u64,
+                team: row.get(1)?,
+                week_start: row.get(2)?,
+                commits: row.get::<_, i64>(3)? as u64,
+                active_repositories: row.get::<_, i64>(4)? as u64,
+                contributor_instances: row.get::<_, i64>(5)? as u64,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    fn ai_doc_summaries(&self) -> Result<Vec<AiDocSummary>> {
+        let total_repositories = self.report_summary()?.repositories.max(1) as f64;
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT doc_name,
+                   category,
+                   COUNT(DISTINCT repo_key) AS repositories,
+                   COUNT(*) AS files
+            FROM ai_doc_occurrences
+            GROUP BY doc_name, category
+            ORDER BY repositories DESC, doc_name ASC
+            "#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let repositories = row.get::<_, i64>(2)? as u64;
+            Ok(AiDocSummary {
+                doc_name: row.get(0)?,
+                category: row.get(1)?,
+                repositories,
+                files: row.get::<_, i64>(3)? as u64,
+                adoption_pct: (repositories as f64 / total_repositories) * 100.0,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    fn ai_doc_occurrences(&self) -> Result<Vec<AiDocOccurrence>> {
+        let mut links_by_source: HashMap<(String, String), Vec<String>> = HashMap::new();
+        let mut link_stmt = self.conn.prepare(
+            r#"
+            SELECT repo_key, source_path, linked_doc
+            FROM ai_doc_links
+            ORDER BY repo_key ASC, source_path ASC, linked_doc ASC
+            "#,
+        )?;
+        let link_rows = link_stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in link_rows {
+            let (repo_key, source_path, linked_doc) = row?;
+            links_by_source
+                .entry((repo_key, source_path))
+                .or_default()
+                .push(linked_doc);
+        }
+
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT repo_key, doc_name, category, path, first_seen_week_start
+            FROM ai_doc_occurrences
+            ORDER BY repo_key ASC, path ASC
+            "#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let repo_key = row.get::<_, String>(0)?;
+            let path = row.get::<_, String>(3)?;
+            Ok(AiDocOccurrence {
+                linked_docs: links_by_source
+                    .get(&(repo_key.clone(), path.clone()))
+                    .cloned()
+                    .unwrap_or_default(),
+                repo_key,
+                doc_name: row.get(1)?,
+                category: row.get(2)?,
+                path,
+                first_seen_week_start: row.get(4)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    fn ai_doc_links(&self) -> Result<Vec<AiDocLinkSummary>> {
+        let total_repositories = self.report_summary()?.repositories.max(1) as f64;
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT source_doc,
+                   linked_doc,
+                   COUNT(DISTINCT repo_key) AS repositories
+            FROM ai_doc_links
+            GROUP BY source_doc, linked_doc
+            ORDER BY repositories DESC, source_doc ASC, linked_doc ASC
+            "#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let repositories = row.get::<_, i64>(2)? as u64;
+            Ok(AiDocLinkSummary {
+                source_doc: row.get(0)?,
+                linked_doc: row.get(1)?,
+                repositories,
+                adoption_pct: (repositories as f64 / total_repositories) * 100.0,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    fn ai_doc_timeline(&self) -> Result<Vec<AiDocTimelinePoint>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT repo_key, doc_name, path, first_seen_week_start
+            FROM ai_doc_occurrences
+            WHERE first_seen_week_start IS NOT NULL
+            ORDER BY first_seen_week_start ASC, repo_key ASC, path ASC
+            "#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+
+        let mut seen_by_doc_path: HashMap<(String, String), HashSet<String>> = HashMap::new();
+        let mut points = Vec::new();
+        for row in rows {
+            let (repo_key, doc_name, path, week_start) = row?;
+            let seen = seen_by_doc_path
+                .entry((doc_name.clone(), path.clone()))
+                .or_default();
+            seen.insert(repo_key);
+            points.push(AiDocTimelinePoint {
+                week_start,
+                doc_name,
+                path,
+                cumulative_repositories: seen.len() as u64,
+            });
+        }
+        Ok(points)
+    }
+
+    fn ai_doc_owner_weekly(&self) -> Result<Vec<AiDocOwnerWeekly>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT repositories.owner,
+                   repositories.team,
+                   ai_doc_weekly_activity.week_start,
+                   COALESCE(SUM(ai_doc_weekly_activity.commits), 0) AS commits
+            FROM ai_doc_weekly_activity
+            INNER JOIN repositories
+                ON repositories.repo_key = ai_doc_weekly_activity.repo_key
+            GROUP BY repositories.owner, repositories.team, ai_doc_weekly_activity.week_start
+            ORDER BY ai_doc_weekly_activity.week_start ASC, repositories.team ASC, repositories.owner ASC
+            "#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(AiDocOwnerWeekly {
+                owner: row.get(0)?,
+                team: row.get(1)?,
+                week_start: row.get(2)?,
+                commits: row.get::<_, i64>(3)? as u64,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -697,6 +980,8 @@ mod tests {
             provider: "github".into(),
             owner: "owner".into(),
             owner_color: Some("#007298".into()),
+            team: Some("team-alpha".into()),
+            team_color: Some("#9e1b32".into()),
             name: "repo".into(),
             url: "https://github.com/owner/repo.git".into(),
             default_branch: Some("main".into()),
@@ -705,6 +990,13 @@ mod tests {
         };
         store.upsert_repository(&repo)?;
         store.set_stage_status(&repo.key(), "fetch", StageStatus::Completed, None)?;
+        let (team, team_color): (Option<String>, Option<String>) = store.conn.query_row(
+            "SELECT team, team_color FROM repositories WHERE repo_key = ?1",
+            params![repo.key()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(team.as_deref(), Some("team-alpha"));
+        assert_eq!(team_color.as_deref(), Some("#9e1b32"));
         assert!(layout.db_path.exists());
         Ok(())
     }

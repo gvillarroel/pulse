@@ -167,3 +167,100 @@ fn run_and_report_work_for_empty_repo() {
         String::from_utf8_lossy(&report.stderr)
     );
 }
+
+#[test]
+fn run_progress_reports_processed_over_total_on_stderr() {
+    let binary = env!("CARGO_BIN_EXE_pulse-cli");
+    let temp = tempdir().expect("tempdir");
+    let origin = temp.path().join("origin.git");
+    let work = temp.path().join("work");
+    let csv = temp.path().join("repos.csv");
+    let state = temp.path().join("state");
+
+    assert!(
+        Command::new("git")
+            .args(["init", "--bare", origin.to_str().expect("origin path")])
+            .status()
+            .expect("init bare")
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .current_dir(temp.path())
+            .args([
+                "clone",
+                origin.to_str().expect("origin"),
+                work.to_str().expect("work")
+            ])
+            .status()
+            .expect("clone")
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .current_dir(&work)
+            .args(["config", "user.email", "pulse@example.com"])
+            .status()
+            .expect("config email")
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .current_dir(&work)
+            .args(["config", "user.name", "Pulse"])
+            .status()
+            .expect("config name")
+            .success()
+    );
+    fs::write(work.join("src.rs"), "fn main() {}\n").expect("write source");
+    assert!(
+        Command::new("git")
+            .current_dir(&work)
+            .args(["add", "."])
+            .status()
+            .expect("git add")
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .current_dir(&work)
+            .args(["commit", "-m", "init"])
+            .status()
+            .expect("commit")
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .current_dir(&work)
+            .args(["push", "origin", "HEAD"])
+            .status()
+            .expect("push")
+            .success()
+    );
+
+    fs::write(&csv, format!("repo\n{}\n", origin.display())).expect("write csv");
+
+    let run = Command::new(binary)
+        .args([
+            "run",
+            "--input",
+            csv.to_str().expect("csv"),
+            "--state-dir",
+            state.to_str().expect("state"),
+            "--json",
+            "--progress",
+        ])
+        .output()
+        .expect("pulse run");
+    assert!(
+        run.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(stderr.contains("0/1"));
+    assert!(stderr.contains("1/1"));
+    assert!(stderr.contains("done"));
+    assert!(!String::from_utf8_lossy(&run.stdout).contains("0/1"));
+}

@@ -1,0 +1,62 @@
+{
+  "summary": {
+    "repositories": 46,
+    "teams": 10,
+    "fetched": 46,
+    "repo_snapshots": 46,
+    "ai_doc_occurrences": 260,
+    "failed_repositories": 0
+  },
+  "teams": [
+    {
+      "team": "team-01",
+      "repos": 5,
+      "repos_with_ai_docs": 2
+    },
+    {
+      "team": "team-02",
+      "repos": 5,
+      "repos_with_ai_docs": 2
+    },
+    {
+      "team": "team-03",
+      "repos": 5,
+      "repos_with_ai_docs": 0
+    },
+    {
+      "team": "team-04",
+      "repos": 5,
+      "repos_with_ai_docs": 4
+    },
+    {
+      "team": "team-05",
+      "repos": 5,
+      "repos_with_ai_docs": 2
+    },
+    {
+      "team": "team-06",
+      "repos": 5,
+      "repos_with_ai_docs": 1
+    },
+    {
+      "team": "team-07",
+      "repos": 4,
+      "repos_with_ai_docs": 1
+    },
+    {
+      "team": "team-08",
+      "repos": 4,
+      "repos_with_ai_docs": 0
+    },
+    {
+      "team": "team-09",
+      "repos": 4,
+      "repos_with_ai_docs": 0
+    },
+    {
+      "team": "team-10",
+      "repos": 4,
+      "repos_with_ai_docs": 1
+    }
+  ]
+}

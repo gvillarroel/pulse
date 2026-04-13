@@ -2145,6 +2145,7 @@ dependencies = [
  "pulse-config",
  "pulse-core",
  "serde",
+ "tempfile",
 ]
 
 [[package]]

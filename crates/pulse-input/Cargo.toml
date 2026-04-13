@@ -9,3 +9,6 @@ csv.workspace = true
 serde.workspace = true
 pulse-core = { path = "../pulse-core" }
 pulse-config = { path = "../pulse-config" }
+
+[dev-dependencies]
+tempfile.workspace = true

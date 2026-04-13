@@ -112,6 +112,8 @@ Recommended optional columns:
 
 - `provider`
 - `owner`
+- `team`
+- `team_color`
 - `name`
 - `url`
 - `default_branch`

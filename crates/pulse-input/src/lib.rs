@@ -11,6 +11,8 @@ struct CsvRepoRecord {
     provider: Option<String>,
     owner: Option<String>,
     owner_color: Option<String>,
+    team: Option<String>,
+    team_color: Option<String>,
     name: Option<String>,
     url: Option<String>,
     default_branch: Option<String>,
@@ -126,6 +128,8 @@ fn normalize_item(item: &RepositoryItem) -> Result<RepoTarget> {
         provider: item.provider.clone().unwrap_or(provider),
         owner: item.owner.clone().unwrap_or(owner),
         owner_color: item.owner_color.clone(),
+        team: item.team.clone(),
+        team_color: item.team_color.clone(),
         name: item.name.clone().unwrap_or(name),
         url: item.url.clone().unwrap_or(inferred_url),
         default_branch: item.default_branch.clone(),
@@ -141,6 +145,8 @@ fn normalize_csv_record(record: CsvRepoRecord) -> Result<RepoTarget> {
         provider: record.provider.unwrap_or(provider),
         owner: record.owner.unwrap_or(owner),
         owner_color: record.owner_color,
+        team: record.team,
+        team_color: record.team_color,
         name: record.name.unwrap_or(name),
         url: record.url.unwrap_or(inferred_url),
         default_branch: record.default_branch,
@@ -170,6 +176,8 @@ fn dedupe_targets(targets: Vec<RepoTarget>) -> Result<Vec<RepoTarget>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn normalizes_owner_name() {
@@ -198,5 +206,20 @@ mod tests {
         assert_eq!(owner, "local");
         assert!(name.contains("origin"));
         assert_eq!(url, repo);
+    }
+
+    #[test]
+    fn loads_team_columns_from_csv() {
+        let dir = tempdir().expect("tempdir");
+        let csv = dir.path().join("repos.csv");
+        fs::write(
+            &csv,
+            "repo,team,team_color\nopenai/openai-cookbook,team-01,#123456\n",
+        )
+        .expect("write csv");
+        let repos = load_csv(&csv).expect("load csv");
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0].team.as_deref(), Some("team-01"));
+        assert_eq!(repos[0].team_color.as_deref(), Some("#123456"));
     }
 }

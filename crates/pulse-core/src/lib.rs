@@ -13,6 +13,8 @@ pub struct RepoTarget {
     pub provider: String,
     pub owner: String,
     pub owner_color: Option<String>,
+    pub team: Option<String>,
+    pub team_color: Option<String>,
     pub name: String,
     pub url: String,
     pub default_branch: Option<String>,
@@ -220,6 +222,8 @@ pub struct RepoOverview {
     pub repo_key: String,
     pub owner: String,
     pub owner_color: Option<String>,
+    pub team: Option<String>,
+    pub team_color: Option<String>,
     pub name: String,
     pub total_files: u64,
     pub total_bytes: u64,
@@ -238,6 +242,7 @@ pub struct WeeklyOverview {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OwnerWeeklyOverview {
     pub owner: String,
+    pub team: Option<String>,
     pub week_start: String,
     pub commits: u64,
     pub active_repositories: u64,
@@ -273,6 +278,7 @@ pub struct AiDocOccurrence {
     pub doc_name: String,
     pub category: String,
     pub path: String,
+    pub first_seen_week_start: Option<String>,
     pub linked_docs: Vec<String>,
 }
 
@@ -295,6 +301,7 @@ pub struct AiDocTimelinePoint {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiDocOwnerWeekly {
     pub owner: String,
+    pub team: Option<String>,
     pub week_start: String,
     pub commits: u64,
 }
