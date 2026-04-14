@@ -84,11 +84,21 @@ Optional columns supported by the current implementation:
 - `owner`
 - `team`
 - `team_color`
+- `owner_level_1`
+- `owner_level_1_color`
+- `owner_level_2`
+- `owner_level_2_color`
+- `owner_level_3`
+- `owner_level_3_color`
+- `owner_level_N`
+- `owner_level_N_color`
 - `name`
 - `url`
 - `default_branch`
 - `tags`
 - `active`
+
+`owner` and `owner_color` remain supported as a compatibility alias for `owner_level_1` and `owner_level_1_color`.
 
 ### YAML input
 
@@ -112,6 +122,21 @@ focus:
 ```
 
 You can also assign repositories to fixed reporting teams through the CSV or YAML input. When a `team` is present, reporting groups by that team instead of falling back to the repository owner.
+
+If you need hierarchical reporting, you can define ordered owner levels in CSV or YAML and then choose the default reporting level in `report.owner_levels`.
+
+Example:
+
+```yaml
+report:
+  owner_levels:
+    default_level: 2
+    labels:
+      - Domain
+      - Portfolio
+      - Team
+      - Account
+```
 
 The repository also includes a sample YAML config under `fixtures/configs/pulse.sample.yaml`.
 

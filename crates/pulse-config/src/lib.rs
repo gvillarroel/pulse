@@ -1,5 +1,5 @@
 use anyhow::Context;
-use pulse_core::{FocusConfig, Result};
+use pulse_core::{FocusConfig, OwnerLevel, ReportOwnerLevelsConfig, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -30,6 +30,8 @@ pub struct RepositoryItem {
     pub provider: Option<String>,
     pub owner: Option<String>,
     pub owner_color: Option<String>,
+    #[serde(default)]
+    pub owner_levels: Vec<OwnerLevel>,
     pub team: Option<String>,
     pub team_color: Option<String>,
     pub name: Option<String>,
@@ -67,6 +69,8 @@ pub struct AnalysisSection {
 pub struct ReportSection {
     #[serde(default)]
     pub ai_docs: FocusConfig,
+    #[serde(default)]
+    pub owner_levels: ReportOwnerLevelsConfig,
 }
 
 pub fn load(path: &Path) -> Result<AppConfig> {

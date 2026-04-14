@@ -286,6 +286,11 @@ mod tests {
             provider: "local".into(),
             owner: "sample".into(),
             owner_color: Some("#007298".into()),
+            owner_levels: vec![pulse_core::OwnerLevel {
+                level: 1,
+                name: "sample".into(),
+                color: Some("#007298".into()),
+            }],
             team: None,
             team_color: None,
             name: "repo".into(),
@@ -315,6 +320,11 @@ mod tests {
             provider: "local".into(),
             owner: "sample".into(),
             owner_color: Some("#007298".into()),
+            owner_levels: vec![pulse_core::OwnerLevel {
+                level: 1,
+                name: "sample".into(),
+                color: Some("#007298".into()),
+            }],
             team: None,
             team_color: None,
             name: "empty".into(),

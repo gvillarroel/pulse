@@ -2,8 +2,9 @@ use anyhow::{Context, Result};
 use pulse_core::{
     AiDocLinkSummary, AiDocOccurrence, AiDocOwnerWeekly, AiDocSummary, AiDocTimelinePoint,
     ExtensionBreakdown, FailureClass, FailureRecord, FetchOutcome, FileSnapshot, LanguageBreakdown,
-    OwnerWeeklyOverview, RepoOverview, RepoSnapshot, RepoTarget, ReportDataset, ReportSummary,
-    RunSummary, StageStatus, StageStatusCount, StateLayout, WeeklyEvolution, WeeklyOverview,
+    OwnerLevel, OwnerWeeklyOverview, RepoOverview, RepoSnapshot, RepoTarget, ReportDataset,
+    ReportSummary, RunSummary, StageStatus, StageStatusCount, StateLayout, WeeklyEvolution,
+    WeeklyOverview,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{HashMap, HashSet};
@@ -52,6 +53,13 @@ impl Store {
             CREATE TABLE IF NOT EXISTS repository_targets (
                 repo_key TEXT PRIMARY KEY,
                 tags_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS repository_owner_levels (
+                repo_key TEXT NOT NULL,
+                level_index INTEGER NOT NULL,
+                owner_name TEXT NOT NULL,
+                owner_color TEXT,
+                PRIMARY KEY (repo_key, level_index)
             );
             CREATE TABLE IF NOT EXISTS repo_stage_checkpoints (
                 repo_key TEXT NOT NULL,
@@ -141,6 +149,7 @@ impl Store {
         self.ensure_column("repositories", "owner_color", "TEXT")?;
         self.ensure_column("repositories", "team", "TEXT")?;
         self.ensure_column("repositories", "team_color", "TEXT")?;
+        self.backfill_owner_levels()?;
         Ok(())
     }
 
@@ -156,6 +165,23 @@ impl Store {
             let alter = format!("ALTER TABLE {table} ADD COLUMN {column} {definition}");
             self.conn.execute(&alter, [])?;
         }
+        Ok(())
+    }
+
+    fn backfill_owner_levels(&self) -> Result<()> {
+        self.conn.execute(
+            r#"
+            INSERT INTO repository_owner_levels (repo_key, level_index, owner_name, owner_color)
+            SELECT repositories.repo_key, 1, repositories.owner, repositories.owner_color
+            FROM repositories
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM repository_owner_levels
+                WHERE repository_owner_levels.repo_key = repositories.repo_key
+            )
+            "#,
+            [],
+        )?;
         Ok(())
     }
 
@@ -175,8 +201,9 @@ impl Store {
         Ok(())
     }
 
-    pub fn upsert_repository(&self, repo: &RepoTarget) -> Result<()> {
-        self.conn.execute(
+    pub fn upsert_repository(&mut self, repo: &RepoTarget) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
             r#"
             INSERT INTO repositories (repo_key, provider, owner, owner_color, team, team_color, name, url, default_branch, active)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
@@ -204,7 +231,7 @@ impl Store {
                 if repo.active { 1 } else { 0 }
             ],
         )?;
-        self.conn.execute(
+        tx.execute(
             r#"
             INSERT INTO repository_targets (repo_key, tags_json)
             VALUES (?1, ?2)
@@ -212,6 +239,20 @@ impl Store {
             "#,
             params![repo.key(), serde_json::to_string(&repo.tags)?],
         )?;
+        tx.execute(
+            "DELETE FROM repository_owner_levels WHERE repo_key = ?1",
+            params![repo.key()],
+        )?;
+        for level in &repo.owner_levels {
+            tx.execute(
+                r#"
+                INSERT INTO repository_owner_levels (repo_key, level_index, owner_name, owner_color)
+                VALUES (?1, ?2, ?3, ?4)
+                "#,
+                params![repo.key(), level.level as i64, level.name, level.color],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -639,6 +680,7 @@ impl Store {
     }
 
     fn repository_overview(&self, limit: usize) -> Result<Vec<RepoOverview>> {
+        let owner_levels_by_repo = self.owner_levels_by_repo()?;
         let mut stmt = self.conn.prepare(
             r#"
             WITH latest_repo_snapshots AS (
@@ -688,10 +730,15 @@ impl Store {
             "#,
         )?;
         let rows = stmt.query_map(params![limit as i64], |row| {
+            let repo_key = row.get::<_, String>(0)?;
             Ok(RepoOverview {
-                repo_key: row.get(0)?,
+                repo_key: repo_key.clone(),
                 owner: row.get(1)?,
                 owner_color: row.get(2)?,
+                owner_levels: owner_levels_by_repo
+                    .get(&repo_key)
+                    .cloned()
+                    .unwrap_or_default(),
                 team: row.get(3)?,
                 team_color: row.get(4)?,
                 name: row.get(5)?,
@@ -730,29 +777,36 @@ impl Store {
     }
 
     fn owner_weekly_overview(&self) -> Result<Vec<OwnerWeeklyOverview>> {
+        let owner_levels_by_repo = self.owner_levels_by_repo()?;
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT repositories.owner,
+            SELECT weekly_evolution.repo_key,
+                   repositories.owner,
                    repositories.team,
                    weekly_evolution.week_start,
-                   COALESCE(SUM(weekly_evolution.commit_count), 0) AS commits,
-                   COUNT(DISTINCT weekly_evolution.repo_key) AS active_repositories,
-                   COALESCE(SUM(weekly_evolution.active_contributors), 0) AS contributor_instances
+                   weekly_evolution.commit_count,
+                   1 AS active_repositories,
+                   weekly_evolution.active_contributors
             FROM weekly_evolution
             INNER JOIN repositories
                 ON repositories.repo_key = weekly_evolution.repo_key
-            GROUP BY repositories.owner, repositories.team, weekly_evolution.week_start
-            ORDER BY weekly_evolution.week_start ASC, repositories.team ASC, repositories.owner ASC
+            ORDER BY weekly_evolution.week_start ASC, repositories.team ASC, repositories.owner ASC, weekly_evolution.repo_key ASC
             "#,
         )?;
         let rows = stmt.query_map([], |row| {
+            let repo_key = row.get::<_, String>(0)?;
             Ok(OwnerWeeklyOverview {
-                owner: row.get(0)?,
-                team: row.get(1)?,
-                week_start: row.get(2)?,
-                commits: row.get::<_, i64>(3)? as u64,
-                active_repositories: row.get::<_, i64>(4)? as u64,
-                contributor_instances: row.get::<_, i64>(5)? as u64,
+                repo_key: repo_key.clone(),
+                owner: row.get(1)?,
+                owner_levels: owner_levels_by_repo
+                    .get(&repo_key)
+                    .cloned()
+                    .unwrap_or_default(),
+                team: row.get(2)?,
+                week_start: row.get(3)?,
+                commits: row.get::<_, i64>(4)? as u64,
+                active_repositories: row.get::<_, i64>(5)? as u64,
+                contributor_instances: row.get::<_, i64>(6)? as u64,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -898,25 +952,32 @@ impl Store {
     }
 
     fn ai_doc_owner_weekly(&self) -> Result<Vec<AiDocOwnerWeekly>> {
+        let owner_levels_by_repo = self.owner_levels_by_repo()?;
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT repositories.owner,
+            SELECT ai_doc_weekly_activity.repo_key,
+                   repositories.owner,
                    repositories.team,
                    ai_doc_weekly_activity.week_start,
-                   COALESCE(SUM(ai_doc_weekly_activity.commits), 0) AS commits
+                   ai_doc_weekly_activity.commits
             FROM ai_doc_weekly_activity
             INNER JOIN repositories
                 ON repositories.repo_key = ai_doc_weekly_activity.repo_key
-            GROUP BY repositories.owner, repositories.team, ai_doc_weekly_activity.week_start
-            ORDER BY ai_doc_weekly_activity.week_start ASC, repositories.team ASC, repositories.owner ASC
+            ORDER BY ai_doc_weekly_activity.week_start ASC, repositories.team ASC, repositories.owner ASC, ai_doc_weekly_activity.repo_key ASC
             "#,
         )?;
         let rows = stmt.query_map([], |row| {
+            let repo_key = row.get::<_, String>(0)?;
             Ok(AiDocOwnerWeekly {
-                owner: row.get(0)?,
-                team: row.get(1)?,
-                week_start: row.get(2)?,
-                commits: row.get::<_, i64>(3)? as u64,
+                repo_key: repo_key.clone(),
+                owner: row.get(1)?,
+                owner_levels: owner_levels_by_repo
+                    .get(&repo_key)
+                    .cloned()
+                    .unwrap_or_default(),
+                team: row.get(2)?,
+                week_start: row.get(3)?,
+                commits: row.get::<_, i64>(4)? as u64,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -966,24 +1027,66 @@ impl Store {
     fn scalar_u64(&self, sql: &str) -> Result<u64> {
         Ok(self.conn.query_row(sql, [], |row| row.get::<_, i64>(0))? as u64)
     }
+
+    fn owner_levels_by_repo(&self) -> Result<HashMap<String, Vec<OwnerLevel>>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT repo_key, level_index, owner_name, owner_color
+            FROM repository_owner_levels
+            ORDER BY repo_key ASC, level_index ASC
+            "#,
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                OwnerLevel {
+                    level: row.get::<_, i64>(1)? as usize,
+                    name: row.get(2)?,
+                    color: row.get(3)?,
+                },
+            ))
+        })?;
+
+        let mut by_repo = HashMap::new();
+        for row in rows {
+            let (repo_key, owner_level) = row?;
+            by_repo
+                .entry(repo_key)
+                .or_insert_with(Vec::new)
+                .push(owner_level);
+        }
+        Ok(by_repo)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pulse_core::RepoTarget;
+    use pulse_core::{OwnerLevel, RepoTarget};
     use tempfile::tempdir;
 
     #[test]
     fn creates_schema_and_upserts_repo() -> Result<()> {
         let dir = tempdir()?;
         let layout = StateLayout::new(dir.path());
-        let store = Store::open(&layout)?;
+        let mut store = Store::open(&layout)?;
         let repo = RepoTarget {
             repo: "owner/repo".into(),
             provider: "github".into(),
             owner: "owner".into(),
             owner_color: Some("#007298".into()),
+            owner_levels: vec![
+                OwnerLevel {
+                    level: 1,
+                    name: "portfolio-alpha".into(),
+                    color: Some("#007298".into()),
+                },
+                OwnerLevel {
+                    level: 2,
+                    name: "squad-bravo".into(),
+                    color: None,
+                },
+            ],
             team: Some("team-alpha".into()),
             team_color: Some("#9e1b32".into()),
             name: "repo".into(),
@@ -1001,6 +1104,12 @@ mod tests {
         )?;
         assert_eq!(team.as_deref(), Some("team-alpha"));
         assert_eq!(team_color.as_deref(), Some("#9e1b32"));
+        let owner_levels: i64 = store.conn.query_row(
+            "SELECT COUNT(*) FROM repository_owner_levels WHERE repo_key = ?1",
+            params![repo.key()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(owner_levels, 2);
         assert!(layout.db_path.exists());
         Ok(())
     }

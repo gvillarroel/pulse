@@ -12,6 +12,7 @@ Process all repositories under the GitHub user `gvillarroel` and persist reusabl
 
 - [input/gvillarroel-repos.csv](/Users/villa/dev/pulse/examples/gvillarroel-all-repos/input/gvillarroel-repos.csv): repository list generated from GitHub
 - [input/ai-docs-focus.yaml](/Users/villa/dev/pulse/examples/gvillarroel-all-repos/input/ai-docs-focus.yaml): config used to prioritize AI-oriented markdown conventions such as `AGENTS.md`, `SKILL.md`, `skills.md`, and related files
+- [input/ai-docs-owner-focus.yaml](/Users/villa/dev/pulse/examples/gvillarroel-all-repos/input/ai-docs-owner-focus.yaml): config that enables hierarchical owner grouping in the final report
 - [output/gvillarroel-state](/Users/villa/dev/pulse/examples/gvillarroel-all-repos/output/gvillarroel-state): persisted state directory used by `pulse run`, with the raw `repos/` mirror cache omitted from version control
 - [reports/run-summary.json](/Users/villa/dev/pulse/examples/gvillarroel-all-repos/reports/run-summary.json): compact machine-readable run summary
 - [reports/failures.csv](/Users/villa/dev/pulse/examples/gvillarroel-all-repos/reports/failures.csv): failed repositories and error details
@@ -67,6 +68,8 @@ This report is intentionally centered on AI-oriented markdown adoption:
 - which repositories use conventions such as `AGENTS.md`, `SKILL.md`, `skills.md`, and `copilot-instructions.md`
 - which linked markdown structures appear under those entrypoints
 - when those conventions first appeared across the repository set
+
+The owner-focused variant of the example also demonstrates multi-level owner metadata persisted into SQLite and switchable in the report as `Domain`, `Portfolio`, `Team`, and `Account`.
 
 ## Where Outputs Live
 

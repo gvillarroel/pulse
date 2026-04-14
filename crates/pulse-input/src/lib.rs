@@ -1,16 +1,16 @@
 use anyhow::{Context, bail};
 use pulse_config::{AppConfig, RepositoryItem};
-use pulse_core::{RepoTarget, Result};
-use serde::Deserialize;
+use pulse_core::{OwnerLevel, RepoTarget, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default)]
 struct CsvRepoRecord {
     repo: String,
     provider: Option<String>,
     owner: Option<String>,
     owner_color: Option<String>,
+    owner_levels: Vec<OwnerLevel>,
     team: Option<String>,
     team_color: Option<String>,
     name: Option<String>,
@@ -45,10 +45,11 @@ pub fn resolve_targets(
 pub fn load_csv(path: &Path) -> Result<Vec<RepoTarget>> {
     let mut reader = csv::Reader::from_path(path)
         .with_context(|| format!("failed to open CSV {}", path.display()))?;
+    let headers = reader.headers()?.clone();
     let mut repos = Vec::new();
-    for row in reader.deserialize() {
-        let record: CsvRepoRecord =
-            row.with_context(|| format!("invalid CSV row in {}", path.display()))?;
+    for row in reader.records() {
+        let record = row.with_context(|| format!("invalid CSV row in {}", path.display()))?;
+        let record = parse_csv_record(&headers, &record)?;
         repos.push(normalize_csv_record(record)?);
     }
     Ok(repos)
@@ -123,11 +124,19 @@ pub fn normalize_repo_spec(spec: &str) -> Result<(String, String, String, String
 
 fn normalize_item(item: &RepositoryItem) -> Result<RepoTarget> {
     let (provider, owner, name, inferred_url) = normalize_repo_spec(&item.repo)?;
+    let owner_levels = normalized_owner_levels(
+        &owner,
+        item.owner.as_deref(),
+        item.owner_color.as_deref(),
+        &item.owner_levels,
+    );
+    let owner_color = owner_levels.first().and_then(|level| level.color.clone());
     Ok(RepoTarget {
         repo: format!("{owner}/{name}"),
         provider: item.provider.clone().unwrap_or(provider),
-        owner: item.owner.clone().unwrap_or(owner),
-        owner_color: item.owner_color.clone(),
+        owner,
+        owner_color,
+        owner_levels,
         team: item.team.clone(),
         team_color: item.team_color.clone(),
         name: item.name.clone().unwrap_or(name),
@@ -140,11 +149,19 @@ fn normalize_item(item: &RepositoryItem) -> Result<RepoTarget> {
 
 fn normalize_csv_record(record: CsvRepoRecord) -> Result<RepoTarget> {
     let (provider, owner, name, inferred_url) = normalize_repo_spec(&record.repo)?;
+    let owner_levels = normalized_owner_levels(
+        &owner,
+        record.owner.as_deref(),
+        record.owner_color.as_deref(),
+        &record.owner_levels,
+    );
+    let owner_color = owner_levels.first().and_then(|level| level.color.clone());
     Ok(RepoTarget {
         repo: format!("{owner}/{name}"),
         provider: record.provider.unwrap_or(provider),
-        owner: record.owner.unwrap_or(owner),
-        owner_color: record.owner_color,
+        owner,
+        owner_color,
+        owner_levels,
         team: record.team,
         team_color: record.team_color,
         name: record.name.unwrap_or(name),
@@ -171,6 +188,99 @@ fn dedupe_targets(targets: Vec<RepoTarget>) -> Result<Vec<RepoTarget>> {
         deduped.entry(target.key()).or_insert(target);
     }
     Ok(deduped.into_values().collect())
+}
+
+fn normalized_owner_levels(
+    canonical_owner: &str,
+    compatibility_owner: Option<&str>,
+    compatibility_owner_color: Option<&str>,
+    configured_levels: &[OwnerLevel],
+) -> Vec<OwnerLevel> {
+    if !configured_levels.is_empty() {
+        return configured_levels
+            .iter()
+            .enumerate()
+            .map(|(index, level)| OwnerLevel {
+                level: index + 1,
+                name: level.name.clone(),
+                color: level.color.clone(),
+            })
+            .collect();
+    }
+
+    let name = compatibility_owner
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(canonical_owner)
+        .to_string();
+    vec![OwnerLevel {
+        level: 1,
+        name,
+        color: compatibility_owner_color.map(ToOwned::to_owned),
+    }]
+}
+
+fn parse_csv_record(headers: &csv::StringRecord, row: &csv::StringRecord) -> Result<CsvRepoRecord> {
+    let mut record = CsvRepoRecord::default();
+    let mut owner_level_names = BTreeMap::new();
+    let mut owner_level_colors = BTreeMap::new();
+
+    for (header, value) in headers.iter().zip(row.iter()) {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((level, is_color)) = parse_owner_level_column(header) {
+            if is_color {
+                owner_level_colors.insert(level, trimmed.to_string());
+            } else {
+                owner_level_names.insert(level, trimmed.to_string());
+            }
+            continue;
+        }
+        match header {
+            "repo" => record.repo = trimmed.to_string(),
+            "provider" => record.provider = Some(trimmed.to_string()),
+            "owner" => record.owner = Some(trimmed.to_string()),
+            "owner_color" => record.owner_color = Some(trimmed.to_string()),
+            "team" => record.team = Some(trimmed.to_string()),
+            "team_color" => record.team_color = Some(trimmed.to_string()),
+            "name" => record.name = Some(trimmed.to_string()),
+            "url" => record.url = Some(trimmed.to_string()),
+            "default_branch" => record.default_branch = Some(trimmed.to_string()),
+            "tags" => record.tags = Some(trimmed.to_string()),
+            "active" => {
+                record.active = Some(trimmed.parse().with_context(|| {
+                    format!("invalid boolean value `{trimmed}` in active column")
+                })?)
+            }
+            _ => {}
+        }
+    }
+
+    if record.repo.is_empty() {
+        bail!("CSV row is missing the required repo column");
+    }
+
+    record.owner_levels = owner_level_names
+        .into_iter()
+        .map(|(level, name)| OwnerLevel {
+            level,
+            name,
+            color: owner_level_colors.remove(&level),
+        })
+        .collect();
+
+    Ok(record)
+}
+
+fn parse_owner_level_column(header: &str) -> Option<(usize, bool)> {
+    let suffix = header.strip_prefix("owner_level_")?;
+    let (number, is_color) = match suffix.strip_suffix("_color") {
+        Some(number) => (number, true),
+        None => (suffix, false),
+    };
+    let level = number.parse().ok()?;
+    Some((level, is_color))
 }
 
 #[cfg(test)]
@@ -221,5 +331,22 @@ mod tests {
         assert_eq!(repos.len(), 1);
         assert_eq!(repos[0].team.as_deref(), Some("team-01"));
         assert_eq!(repos[0].team_color.as_deref(), Some("#123456"));
+    }
+
+    #[test]
+    fn loads_owner_levels_from_csv() {
+        let dir = tempdir().expect("tempdir");
+        let csv = dir.path().join("repos.csv");
+        fs::write(
+            &csv,
+            "repo,owner_level_1,owner_level_1_color,owner_level_2,owner_level_3\nopenai/openai-cookbook,platform,#123456,experience,docs\n",
+        )
+        .expect("write csv");
+        let repos = load_csv(&csv).expect("load csv");
+        assert_eq!(repos[0].owner, "openai");
+        assert_eq!(repos[0].owner_levels.len(), 3);
+        assert_eq!(repos[0].owner_levels[0].name, "platform");
+        assert_eq!(repos[0].owner_levels[0].color.as_deref(), Some("#123456"));
+        assert_eq!(repos[0].owner_levels[2].name, "docs");
     }
 }

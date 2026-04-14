@@ -13,6 +13,8 @@ pub struct RepoTarget {
     pub provider: String,
     pub owner: String,
     pub owner_color: Option<String>,
+    #[serde(default)]
+    pub owner_levels: Vec<OwnerLevel>,
     pub team: Option<String>,
     pub team_color: Option<String>,
     pub name: String,
@@ -26,6 +28,13 @@ impl RepoTarget {
     pub fn key(&self) -> String {
         format!("{}/{}/{}", self.provider, self.owner, self.name)
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OwnerLevel {
+    pub level: usize,
+    pub name: String,
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -222,6 +231,7 @@ pub struct RepoOverview {
     pub repo_key: String,
     pub owner: String,
     pub owner_color: Option<String>,
+    pub owner_levels: Vec<OwnerLevel>,
     pub team: Option<String>,
     pub team_color: Option<String>,
     pub name: String,
@@ -241,7 +251,9 @@ pub struct WeeklyOverview {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OwnerWeeklyOverview {
+    pub repo_key: String,
     pub owner: String,
+    pub owner_levels: Vec<OwnerLevel>,
     pub team: Option<String>,
     pub week_start: String,
     pub commits: u64,
@@ -300,10 +312,25 @@ pub struct AiDocTimelinePoint {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiDocOwnerWeekly {
+    pub repo_key: String,
     pub owner: String,
+    pub owner_levels: Vec<OwnerLevel>,
     pub team: Option<String>,
     pub week_start: String,
     pub commits: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ReportOwnerLevelsConfig {
+    pub default_level: Option<usize>,
+    #[serde(default)]
+    pub labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ReportRenderOptions {
+    #[serde(default)]
+    pub owner_levels: ReportOwnerLevelsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

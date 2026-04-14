@@ -3,6 +3,13 @@ repositories:
 analysis:
   with_history: true
 report:
+  owner_levels:
+    default_level: 2
+    labels:
+      - Domain
+      - Portfolio
+      - Team
+      - Account
   ai_docs:
     include:
       - AGENTS.md
