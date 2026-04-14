@@ -8,12 +8,14 @@ If you need to recover context quickly, start here and follow the links outward.
 
 - [README.md](/Users/villa/dev/pulse/README.md): repository overview and quick start
 - [docs/user-manual.md](/Users/villa/dev/pulse/docs/user-manual.md): practical user guide
+- [docs/architecture/pipeline-overview.md](/Users/villa/dev/pulse/docs/architecture/pipeline-overview.md): system overview for new contributors
 - [spec.md](/Users/villa/dev/pulse/spec.md): product and pipeline specification
 - [commands.md](/Users/villa/dev/pulse/commands.md): CLI contract
 
 ## Architecture And Decisions
 
-- [ADR/README.md](/Users/villa/dev/pulse/ADR/README.md): ADR index
+- [.specs/adr/](/Users/villa/dev/pulse/.specs/adr): ADR folder
+- [docs/architecture/pipeline-overview.md](/Users/villa/dev/pulse/docs/architecture/pipeline-overview.md): runtime pipeline and stage responsibilities
 - [docs/architecture/repository-layout.md](/Users/villa/dev/pulse/docs/architecture/repository-layout.md): production layout
 - [docs/state-layout/README.md](/Users/villa/dev/pulse/docs/state-layout/README.md): operator state layout
 - [docs/schemas/state-tables.md](/Users/villa/dev/pulse/docs/schemas/state-tables.md): SQLite table reference
@@ -33,11 +35,12 @@ If you need to recover context quickly, start here and follow the links outward.
 flowchart TD
     M["m.md"] --> R["README.md"]
     M --> U["docs/user-manual.md"]
+    M --> P["docs/architecture/pipeline-overview.md"]
     M --> S["spec.md"]
     M --> C["commands.md"]
-    M --> A["ADR/README.md"]
+    M --> A[".specs/adr/"]
     M --> X["examples/README.md"]
     X --> G["examples/gvillarroel-all-repos/README.md"]
-    R --> D["docs/architecture + docs/state-layout + docs/schemas"]
+    P --> D["docs/architecture/repository-layout.md"]
+    D --> T["docs/state-layout + docs/schemas"]
 ```
-

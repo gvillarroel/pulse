@@ -1,279 +1,167 @@
 # pulse
 
-`pulse` is a terminal-first repository analytics tool for teams that want a fast, repeatable view of AI adoption across an engineering organization.
+`pulse` is a terminal-first analytics tool for collecting engineering signals from many repositories, storing them in reusable local state, and turning that state into reports.
 
-Today the implemented workflow is:
+The project is intentionally designed for batch work:
 
-1. collect the repositories for a GitHub organization or account
-2. fetch and analyze them into a durable local state directory
-3. generate a self-contained HTML report from that persisted state
+- analyze many repositories, not just one
+- reuse prior results instead of recomputing everything
+- survive interruptions and reruns
+- keep state inspectable on disk
+- produce reports from persisted state, not from ad hoc in-memory analysis
 
-The current AI-oriented report is especially useful for questions like:
+## What Problem `pulse` Solves
 
-- which repositories already use `AGENTS.md`, `CLAUDE.md`, `SKILL.md`, `skills.md`, or `copilot-instructions.md`
-- which repositories link AI-related documents together
-- when those conventions started appearing across the repository set
+Most repository analysis scripts work once, on one machine, for one moment in time.
 
-## What A Company Can Do With It
+`pulse` is trying to solve a different problem:
 
-A company can point `pulse` at its GitHub organization and generate an HTML report that shows its current AI documentation footprint and adoption progress across repositories.
+- you want to analyze dozens or hundreds of repositories
+- you want the run to be repeatable next week
+- you want durable checkpoints and reusable fetched Git data
+- you want a report generated from stored facts instead of from a one-off script
 
-The shortest path is:
+Today the project already supports a practical early workflow:
 
-1. export the repository list from GitHub
-2. run `pulse`
-3. open the generated report
+1. define a repository list in CSV or YAML
+2. run `pulse` to fetch and analyze those repositories into a state directory
+3. render a self-contained HTML report from that state directory
 
-## Install
+## The Mental Model
 
-### Prerequisites
+The easiest way to understand `pulse` is to think of it as a small pipeline with durable storage in the middle.
+
+```text
+input list/config -> fetch -> analyze -> store -> report
+```
+
+Each step matters:
+
+- `input`: which repositories should be processed
+- `fetch`: clone or update reusable local Git mirrors
+- `analyze`: compute repository, file, and history facts
+- `store`: persist results and checkpoints in SQLite plus managed directories
+- `report`: read stored state and generate an HTML artifact
+
+The important design choice is that `report` does not re-scan repositories. It reads the persisted state created by `run`.
+
+## Current CLI Surface
+
+The current implementation is intentionally small:
+
+- `pulse list`
+- `pulse run`
+- `pulse report`
+
+These commands map to three operator tasks:
+
+- confirm the repository set
+- execute the pipeline into a state directory
+- render a report from saved state
+
+## Quick Start
+
+### 1. Prerequisites
 
 You need:
 
-- [Rust](https://www.rust-lang.org/tools/install)
+- Rust and Cargo
 - `git` on your `PATH`
-- [GitHub CLI](https://cli.github.com/) if you want the easiest organization-wide workflow
+- network access if you are fetching remote repositories
 
 Verify the toolchain:
 
 ```powershell
 cargo --version
 git --version
-gh --version
 ```
 
-### Build
-
-From the repository root:
+### 2. Build the CLI
 
 ```powershell
 cargo build -p pulse-cli
 ```
 
-You can run the CLI without installing it globally:
+Run help:
 
 ```powershell
 cargo run -p pulse-cli -- --help
 ```
 
-Or install it locally with Cargo:
-
-```powershell
-cargo install --path crates/pulse-cli
-```
-
-Cargo installs the executable as `pulse-cli`, so after that use:
-
-```powershell
-pulse-cli --help
-```
-
-The installed executable is currently named `pulse-cli`, while the product and command surface are documented as `pulse`.
-
-## Fastest Organization Workflow
-
-This is the main recommended path for a company that wants an AI adoption report for one GitHub organization.
-
-### 1. Authenticate GitHub CLI
-
-```powershell
-gh auth login
-```
-
-### 2. Export only non-archived repositories updated since a given date
-
-Choose the command block for your OS.
-
-Filter rules:
-
-- exclude archived repositories
-- keep only repositories with `pushedAt` on or after a cutoff date
-
-Use an ISO date such as `2026-01-01`.
-
-#### Windows PowerShell
-
-```powershell
-$Org = "my-org"
-$Since = Get-Date "2026-01-01"
-
-$repos = gh repo list $Org --limit 500 --no-archived --json nameWithOwner,pushedAt |
-  ConvertFrom-Json |
-  Where-Object { [datetime]$_.pushedAt -ge $Since } |
-  Sort-Object pushedAt -Descending
-
-@('repo') + ($repos.nameWithOwner) | Set-Content ".\$Org-repos.csv"
-```
-
-#### macOS / Linux (`bash` or `zsh`)
-
-```bash
-ORG="my-org"
-SINCE="2026-01-01T00:00:00Z"
-
-{
-  echo "repo"
-  gh repo list "$ORG" --limit 500 --no-archived --json nameWithOwner,pushedAt \
-    --jq ".[] | select(.pushedAt >= \"$SINCE\") | .nameWithOwner"
-} > "./$ORG-repos.csv"
-```
-
-If the organization has more than 500 repositories, increase `--limit`.
-
-If you want a different cutoff, just change `$Since` on Windows or `$SINCE` on macOS/Linux.
-
-The generated CSV is exactly what `pulse` expects:
+### 3. Create a minimal input CSV
 
 ```csv
 repo
-my-org/service-a
-my-org/platform-api
-my-org/internal-docs
+openai/openai-cookbook
+rust-lang/cargo
 ```
 
-### 3. Create an AI-focused config
+Save it as `repos.csv`.
 
-Create `.\ai-report.yaml`.
-
-If you used `my-org` above, the CSV path below is correct as-is:
-
-```yaml
-repositories:
-  csv: ./my-org-repos.csv
-
-analysis:
-  with_history: true
-
-focus:
-  include:
-    - AGENTS.md
-    - CLAUDE.md
-    - SPEC.md
-    - SPECS.md
-    - skills.md
-    - .github/copilot-instructions.md
-    - "**/AGENTS.md"
-    - "**/CLAUDE.md"
-    - "**/SKILL.md"
-    - "**/skills.md"
-    - "**/copilot-instructions.md"
-    - "**/*agent*.md"
-    - "**/*skill*.md"
-    - "**/*copilot*.md"
-    - "**/*prompt*.md"
-    - "**/*model*.md"
-```
-
-This config tells `pulse` to:
-
-- process the repositories from your organization CSV
-- compute weekly history aggregates
-- mark AI-related documentation paths as focused files
-
-### 4. Run the analysis
+### 4. Run a first analysis
 
 ```powershell
-cargo run -p pulse-cli -- run --config .\ai-report.yaml --state-dir .\state\my-org --progress --json
+cargo run -p pulse-cli -- run --input .\repos.csv --state-dir .\state\demo --progress --json
 ```
 
-If you installed the binary with `cargo install`, you can run:
+### 5. Render the HTML report
 
 ```powershell
-pulse-cli run --config .\ai-report.yaml --state-dir .\state\my-org --progress --json
+cargo run -p pulse-cli -- report --state-dir .\state\demo --title "Demo Pulse Report"
 ```
 
-### 5. Generate the HTML report
-
-```powershell
-cargo run -p pulse-cli -- report --state-dir .\state\my-org --title "My Org AI Adoption Report"
-```
-
-Or:
-
-```powershell
-pulse-cli report --state-dir .\state\my-org --title "My Org AI Adoption Report"
-```
-
-The command prints the output path for the generated HTML file.
-
-By default it is written under:
+By default the report is written to:
 
 ```text
-.\state\my-org\exports\report.html
+.\state\demo\exports\report.html
 ```
 
-## Daily Use
+## Beginner Workflow
 
-The same state directory is reusable. That means reruns are safe and intended.
+If you are new to the project, this is the best reading order:
 
-Typical update flow:
+1. This file for the product overview
+2. [docs/README.md](./docs/README.md) for the documentation map
+3. [docs/user-manual.md](./docs/user-manual.md) for hands-on usage
+4. [docs/architecture/pipeline-overview.md](./docs/architecture/pipeline-overview.md) for the system view
+5. [docs/architecture/repository-layout.md](./docs/architecture/repository-layout.md) for codebase orientation
 
-```powershell
-pulse-cli run --config .\ai-report.yaml --state-dir .\state\my-org --progress --json
-pulse-cli report --state-dir .\state\my-org --title "My Org AI Adoption Report"
-```
+## Architecture At A Glance
 
-This makes it practical to refresh the report weekly or monthly and track how AI-related conventions spread across the organization.
+`pulse` is a Rust workspace. The crates correspond closely to the pipeline stages.
 
-## What The Report Means Today
+| Crate | Responsibility |
+| --- | --- |
+| `pulse-cli` | command entrypoint and top-level workflow orchestration |
+| `pulse-core` | shared domain types, result types, and state layout |
+| `pulse-config` | YAML configuration loading |
+| `pulse-input` | CSV parsing and repository target normalization |
+| `pulse-fetch` | Git fetch and mirror management |
+| `pulse-git` | lower-level Git helpers |
+| `pulse-analyze` | snapshot analysis for repositories and files |
+| `pulse-store` | SQLite persistence, checkpoints, and report datasets |
+| `pulse-export` | CSV/JSON export and HTML report generation |
 
-The current report is a practical early signal for AI readiness and adoption, not a full semantic audit of AI usage.
+The high-level runtime flow is:
 
-Today `pulse` is strongest at identifying:
-
-- AI-related repository documentation entrypoints
-- structured markdown conventions used by coding assistants and agent workflows
-- linked documentation relationships
-- first-seen adoption over time
-
-It does not yet claim to measure:
-
-- model quality
-- prompt quality
-- production AI feature correctness
-- actual runtime AI traffic
-
-So the best way to position the report today is:
-
-- organizational AI documentation adoption
-- repository-level AI workflow readiness
-- spread of assistant and agent operating conventions
-
-## Minimal Commands
-
-These commands match the current CLI implementation:
-
-Validate the repository list:
-
-```powershell
-pulse-cli list --input .\my-org-repos.csv --format json
-```
-
-Run analysis from CSV only:
-
-```powershell
-pulse-cli run --input .\my-org-repos.csv --state-dir .\state\my-org --json
-```
-
-Run analysis from YAML config:
-
-```powershell
-pulse-cli run --config .\ai-report.yaml --state-dir .\state\my-org --progress --json
-```
-
-Render the report:
-
-```powershell
-pulse-cli report --state-dir .\state\my-org
+```text
+pulse-cli
+  -> pulse-config / pulse-input
+  -> pulse-fetch
+  -> pulse-analyze
+  -> pulse-store
+  -> pulse-export
 ```
 
 ## State Directory
 
-`pulse` writes durable operator-managed state under `--state-dir`:
+The state directory is the center of the system. It is what makes reruns safe and reports reproducible.
+
+Typical layout:
 
 ```text
 state/
-  my-org/
+  demo/
     repos/
     db/
       pulse.sqlite
@@ -283,53 +171,63 @@ state/
       report.html
 ```
 
-Important parts:
+Key idea:
 
-- `repos/`: persistent bare Git caches
-- `db/pulse.sqlite`: fetched state, checkpoints, snapshots, and weekly aggregates
-- `exports/report.html`: shareable HTML report
+- `repos/` stores reusable fetched Git data
+- `db/pulse.sqlite` stores checkpoints and computed facts
+- `exports/` stores rendered artifacts
 
-## Worked Example
+More detail: [docs/state-layout/README.md](./docs/state-layout/README.md)
 
-This repository includes a full example of the same workflow over a real GitHub account:
+## Inputs And Grouping
 
-- [examples/gvillarroel-all-repos/README.md](./examples/gvillarroel-all-repos/README.md)
+`pulse` accepts repository inputs from CSV or YAML.
 
-It shows:
+Useful input capabilities already supported today:
 
-- how the repository list was generated
-- the config used for AI-oriented focus paths
-- where the persisted state lives
-- the resulting report artifacts
+- basic repository list via `repo`
+- optional `team` and `team_color`
+- hierarchical owner grouping via `owner_level_1`, `owner_level_2`, `owner_level_N`
+- YAML-based focus patterns
+- YAML-based report options
 
-## Current Scope
+This means you can carry reporting metadata with the repository list instead of hardcoding it into the report layer.
 
-The current implementation already includes:
+## What The Project Already Does Well
 
-- repository input from CSV or YAML
-- repository fetching into a reusable local cache
-- repository and file snapshot metrics
+- explicit CSV and YAML intake
+- reusable Git fetch cache
+- durable SQLite-backed state
+- resumable reruns
+- focused-file classification
 - optional weekly history aggregation
-- HTML report generation from persisted state
+- self-contained HTML report generation
 
-The current implementation does not yet include:
+## What Is Still Early
 
-- built-in GitHub organization discovery inside the CLI
-- deep semantic analysis of prompts, agents, or models
-- provider-wide filtering directly from `pulse run`
+The current implementation is still a narrow V1 slice.
 
-For now, GitHub CLI is the easiest way to provide the organization repository list.
+Notably deferred or still simple today:
 
-## Documentation Map
+- provider-backed discovery from inside the CLI
+- richer semantic analysis
+- advanced query/export commands beyond the HTML report
+- production-grade multi-provider support
 
-Use [m.md](./m.md) as the top-level navigation index when you want the shortest path through the repository documentation.
+## Repository Guide
 
-## More Detail
+Important files and folders:
 
-Use these documents when you need implementation or architecture detail:
+- [spec.md](./spec.md): product-level specification
+- [commands.md](./commands.md): intended CLI contract
+- [docs/](./docs/README.md): operator and implementation documentation
+- [examples/](./examples/README.md): worked runs
+- [spikes/](./spikes): experiments and technical investigations
+- [.specs/adr/](./.specs/adr): architecture decisions
+
+## Recommended Next Reads
 
 - [docs/user-manual.md](./docs/user-manual.md)
-- [commands.md](./commands.md)
-- [spec.md](./spec.md)
-- [docs/state-layout/README.md](./docs/state-layout/README.md)
-- [examples/README.md](./examples/README.md)
+- [docs/architecture/pipeline-overview.md](./docs/architecture/pipeline-overview.md)
+- [docs/architecture/repository-layout.md](./docs/architecture/repository-layout.md)
+- [examples/gvillarroel-all-repos/README.md](./examples/gvillarroel-all-repos/README.md)

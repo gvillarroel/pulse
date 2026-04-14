@@ -1,57 +1,97 @@
 # User Manual
 
-This manual is the fastest way to start using `pulse` to investigate one repository or a larger set of repositories.
+This manual is for someone who wants to use `pulse` without first reverse-engineering the repository.
 
-`pulse` is a terminal-first tool. Its current workflow is built around three commands:
+It explains:
 
-- `pulse list`: resolve and normalize the repositories you want to process
-- `pulse run`: fetch, analyze, and persist reusable state for those repositories
-- `pulse report`: render a self-contained HTML report from persisted state
+- what `pulse` does
+- how to think about the workflow
+- how to prepare inputs
+- how to run the three main commands
+- what gets written to disk
+- how to inspect and troubleshoot the results
 
-## 1. What `pulse` does today
+## 1. What `pulse` Is
 
-The current implementation can:
+`pulse` is a repository analytics pipeline with a CLI front end.
 
-- read repositories from a CSV file or YAML config
-- normalize repository identifiers
-- fetch repositories into a reusable bare Git cache
-- analyze Git-tracked files at the fetched revision
-- calculate file and repository snapshots
-- persist checkpoints and results in SQLite
-- optionally compute simple weekly history aggregates
-- generate a self-contained HTML report from the persisted SQLite state
+You give it an explicit repository set. It fetches those repositories, analyzes them, stores reusable facts in a state directory, and then renders a report from that stored state.
 
-The current implementation does not yet include:
+That makes it different from a simple reporting script:
 
-- provider API discovery from GitHub filters
-- full `gix`-based history enrichment
-- `gengo`-based language detection
-- a dedicated ad hoc query subcommand over persisted state
+- it is meant to be rerun
+- it keeps durable state
+- it separates execution from reporting
+- it is designed for batches of repositories
 
-## 2. Prerequisites
+## 2. The Three Commands
+
+The current user-facing workflow is intentionally small:
+
+- `pulse list`
+- `pulse run`
+- `pulse report`
+
+Think of them this way:
+
+| Command | Purpose |
+| --- | --- |
+| `list` | resolve and inspect the repository targets |
+| `run` | fetch, analyze, and persist reusable state |
+| `report` | render HTML from previously persisted state |
+
+## 3. The Fastest First Run
+
+If you want the shortest path from zero to a report:
+
+1. create a `repos.csv`
+2. run `pulse run`
+3. run `pulse report`
+
+Minimal CSV:
+
+```csv
+repo
+openai/openai-cookbook
+rust-lang/cargo
+```
+
+Run:
+
+```powershell
+cargo run -p pulse-cli -- run --input .\repos.csv --state-dir .\state\demo --progress --json
+```
+
+Render:
+
+```powershell
+cargo run -p pulse-cli -- report --state-dir .\state\demo --title "Demo Pulse Report"
+```
+
+## 4. Before You Run Anything
+
+### Prerequisites
 
 You need:
 
-- Rust and Cargo installed
-- `git` installed and available on your `PATH`
-- network access if you will fetch remote repositories
+- Rust and Cargo
+- `git` on your `PATH`
+- network access for remote repositories
 
-Verify the toolchain:
+Verify:
 
 ```powershell
 cargo --version
 git --version
 ```
 
-## 3. Build and run the CLI
-
-From the repository root:
+### Build The CLI
 
 ```powershell
-cargo build
+cargo build -p pulse-cli
 ```
 
-Run help:
+Help commands:
 
 ```powershell
 cargo run -p pulse-cli -- --help
@@ -60,28 +100,30 @@ cargo run -p pulse-cli -- run --help
 cargo run -p pulse-cli -- report --help
 ```
 
-## 4. Input formats
+## 5. Input Files
 
-### CSV input
+`pulse` accepts inputs in two main forms:
 
-The smallest valid CSV is:
+- CSV when you want the simplest explicit list
+- YAML when you want repository input plus analysis and report settings in one place
 
-```csv
-repo
-openai/openai-cookbook
-rust-lang/cargo
-```
+### CSV Input
 
-Supported `repo` values:
+The required column is:
+
+- `repo`
+
+Accepted `repo` values:
 
 - `owner/name`
 - `https://host/owner/name.git`
-- an absolute local path to a bare repository, for example `C:\repos\sample.git`
+- an absolute local path to a bare repository
 
-Optional columns supported by the current implementation:
+Optional metadata columns:
 
 - `provider`
 - `owner`
+- `owner_color`
 - `team`
 - `team_color`
 - `owner_level_1`
@@ -98,36 +140,35 @@ Optional columns supported by the current implementation:
 - `tags`
 - `active`
 
-`owner` and `owner_color` remain supported as a compatibility alias for `owner_level_1` and `owner_level_1_color`.
+`owner` and `owner_color` are still supported as compatibility aliases for the first owner level.
 
-### YAML input
+### YAML Input
 
-Use YAML when you want repository inputs plus analysis settings and focus rules in one file.
+Use YAML when you want one file to describe:
+
+- where repositories come from
+- whether history analysis runs
+- which files should be considered focused
+- which file patterns should drive AI-document reporting
+- which owner level should be used by default in the HTML report
 
 Example:
 
 ```yaml
 repositories:
-  csv: ../csv/repos.sample.csv
+  csv: ./repos.csv
 
 analysis:
   with_history: true
 
 focus:
   include:
+    - AGENTS.md
+    - "**/AGENTS.md"
     - src/**/*.rs
-    - Cargo.toml
   exclude:
     - target/**
-```
 
-You can also assign repositories to fixed reporting teams through the CSV or YAML input. When a `team` is present, reporting groups by that team instead of falling back to the repository owner.
-
-If you need hierarchical reporting, you can define ordered owner levels in CSV or YAML and then choose the default reporting level in `report.owner_levels`.
-
-Example:
-
-```yaml
 report:
   owner_levels:
     default_level: 2
@@ -136,103 +177,178 @@ report:
       - Portfolio
       - Team
       - Account
+  ai_docs:
+    include:
+      - AGENTS.md
+      - "**/AGENTS.md"
+      - "**/*agent*.md"
 ```
 
-The repository also includes a sample YAML config under `fixtures/configs/pulse.sample.yaml`.
+## 6. Understanding Grouping Metadata
 
-## 5. First workflow: inspect the target list
+`pulse` can carry reporting structure inside the repository input.
 
-Start by validating the repository set before you run analysis.
+There are two main grouping approaches:
+
+### Team-Based Grouping
+
+Use:
+
+- `team`
+- `team_color`
+
+This is useful when you already have one reporting team per repository.
+
+### Hierarchical Owner Levels
+
+Use:
+
+- `owner_level_1`
+- `owner_level_2`
+- `owner_level_3`
+- `owner_level_N`
+
+This is useful when you want multiple reporting cuts over the same repository set, for example:
+
+- domain
+- portfolio
+- team
+- account
+
+The final report can then switch between those levels without re-analyzing the repositories.
+
+## 7. Command 1: `pulse list`
+
+Use `list` when you want to inspect what `pulse` will process before you spend time fetching and analyzing repositories.
 
 ### From CSV
 
 ```powershell
-cargo run -p pulse-cli -- list --input .\fixtures\csv\repos.sample.csv
+cargo run -p pulse-cli -- list --input .\repos.csv
 ```
 
 JSON output:
 
 ```powershell
-cargo run -p pulse-cli -- list --input .\fixtures\csv\repos.sample.csv --format json
+cargo run -p pulse-cli -- list --input .\repos.csv --format json
 ```
 
-Write the normalized list to disk:
+Write the normalized targets to disk:
 
 ```powershell
-cargo run -p pulse-cli -- list --input .\fixtures\csv\repos.sample.csv --format csv --out .\targets.csv
+cargo run -p pulse-cli -- list --input .\repos.csv --format csv --out .\targets.csv
 ```
 
 ### From YAML
 
 ```powershell
-cargo run -p pulse-cli -- list --config .\fixtures\configs\pulse.sample.yaml --format json
+cargo run -p pulse-cli -- list --config .\pulse.yaml --format json
 ```
 
-## 6. Second workflow: run analysis
+Use this command to verify:
 
-Pick a durable state directory. This directory is the reusable local source of truth for later reruns.
+- repository normalization
+- deduplication
+- metadata such as owner levels or team labels
 
-Example:
+## 8. Command 2: `pulse run`
+
+`run` is the main pipeline command.
+
+It does all of the expensive work:
+
+- reads targets
+- fetches repositories
+- analyzes the current revision
+- optionally computes weekly history
+- stores checkpoints and results in SQLite
+
+### Minimal run
 
 ```powershell
-cargo run -p pulse-cli -- run --input .\fixtures\csv\repos.sample.csv --state-dir .\state --json
+cargo run -p pulse-cli -- run --input .\repos.csv --state-dir .\state\demo --json
 ```
 
-With progress output:
+### Run with progress
 
 ```powershell
-cargo run -p pulse-cli -- run --input .\fixtures\csv\repos.sample.csv --state-dir .\state --progress
+cargo run -p pulse-cli -- run --input .\repos.csv --state-dir .\state\demo --progress
 ```
 
-With YAML config:
+### Run from YAML
 
 ```powershell
-cargo run -p pulse-cli -- run --config .\fixtures\configs\pulse.sample.yaml --state-dir .\state --json
+cargo run -p pulse-cli -- run --config .\pulse.yaml --state-dir .\state\demo --json
 ```
 
-With history enabled:
+### Run with history
 
 ```powershell
-cargo run -p pulse-cli -- run --input .\fixtures\csv\repos.sample.csv --state-dir .\state --with-history --json
+cargo run -p pulse-cli -- run --config .\pulse.yaml --state-dir .\state\demo --with-history --progress
 ```
 
-## 7. Third workflow: render the report
+### What `run` leaves behind
 
-Once `pulse run` has populated the state directory, generate the HTML report:
+After a successful run, the state directory contains:
+
+- reusable Git mirrors
+- SQLite tables with snapshots and checkpoints
+- enough information to rerun safely later
+
+## 9. Command 3: `pulse report`
+
+`report` reads the existing state directory and generates a self-contained HTML file.
+
+It does not fetch repositories again.
+
+### Basic report
 
 ```powershell
-cargo run -p pulse-cli -- report --state-dir .\state
+cargo run -p pulse-cli -- report --state-dir .\state\demo
 ```
 
-Provide a custom title:
+### Custom title
 
 ```powershell
-cargo run -p pulse-cli -- report --state-dir .\state --title "Team AI Adoption Report"
+cargo run -p pulse-cli -- report --state-dir .\state\demo --title "My Team Report"
 ```
 
-Write the report to a custom location:
+### Custom output path
 
 ```powershell
-cargo run -p pulse-cli -- report --state-dir .\state --out .\reports\team.html
+cargo run -p pulse-cli -- report --state-dir .\state\demo --out .\reports\demo.html
+```
+
+### Report with YAML-backed presentation settings
+
+```powershell
+cargo run -p pulse-cli -- report --config .\pulse.yaml --state-dir .\state\demo
 ```
 
 By default the report is written to:
 
 ```text
-.\state\exports\report.html
+.\state\demo\exports\report.html
 ```
 
-## 8. Focus analysis
+## 10. Focus Rules
 
-Use focus rules to mark some files as more important than the baseline inventory.
+Focus rules let you mark certain paths as more important than the general baseline inventory.
 
-You can pass focus patterns directly:
+This is useful when you want to emphasize:
+
+- AI-related docs
+- source directories
+- specific config files
+- known high-value areas of a repository
+
+### Pass focus rules directly
 
 ```powershell
 cargo run -p pulse-cli -- run --input .\repos.csv --state-dir .\state --focus "src/**/*.rs" --focus "Cargo.toml"
 ```
 
-Or load them from a file:
+### Load focus rules from a file
 
 ```powershell
 cargo run -p pulse-cli -- run --input .\repos.csv --state-dir .\state --focus-file .\focus.txt
@@ -246,53 +362,53 @@ docs/**/*.md
 Cargo.toml
 ```
 
-At the moment, focused files are persisted with a `focused` depth classification in `file_snapshots`.
+## 11. What Gets Written To `--state-dir`
 
-## 9. What gets written to `--state-dir`
-
-`pulse` writes a durable state tree:
+Typical layout:
 
 ```text
 state/
-  repos/
-  db/
-    pulse.sqlite
-  runs/
-  logs/
-  exports/
-    report.html
+  demo/
+    repos/
+    db/
+      pulse.sqlite
+    runs/
+    logs/
+    exports/
+      report.html
 ```
 
-What each part means:
+What each part is for:
 
-- `repos/`: bare Git caches for fetched repositories
-- `db/pulse.sqlite`: checkpoints, repository metadata, snapshots, and weekly aggregates
-- `runs/`: reserved for future run-specific artifacts
-- `logs/`: reserved for future logs
-- `exports/`: generated HTML reports and future exported datasets
+- `repos/`: reusable Git mirrors and fetch state
+- `db/pulse.sqlite`: checkpoints, repository metadata, snapshots, weekly history, and reporting datasets
+- `runs/`: reserved for run-oriented artifacts
+- `logs/`: reserved for execution logs
+- `exports/`: HTML reports and future derived outputs
 
-More detail: [state-layout/README.md](./state-layout/README.md)
+Detailed reference: [state-layout/README.md](./state-layout/README.md)
 
-## 10. How to inspect results
+## 12. How To Inspect Results
 
-There are now two practical ways to inspect results:
+There are two practical inspection paths:
 
-- open the generated HTML report for the fastest overview
-- query SQLite directly when you need raw tables
+- open the HTML report for a quick overview
+- query SQLite directly for raw facts
 
 If you have `sqlite3` installed:
 
 ```powershell
-sqlite3 .\state\db\pulse.sqlite ".tables"
-sqlite3 .\state\db\pulse.sqlite "select repo_key, fetched_revision, fetched_at from fetch_state;"
-sqlite3 .\state\db\pulse.sqlite "select repo_key, revision, total_files, total_lines from repo_snapshots;"
-sqlite3 .\state\db\pulse.sqlite "select repo_key, path, language, size_bytes, line_count, depth from file_snapshots limit 20;"
-sqlite3 .\state\db\pulse.sqlite "select repo_key, week_start, commit_count, active_contributors from weekly_evolution order by week_start desc limit 20;"
+sqlite3 .\state\demo\db\pulse.sqlite ".tables"
+sqlite3 .\state\demo\db\pulse.sqlite "select repo_key, fetched_revision, fetched_at from fetch_state;"
+sqlite3 .\state\demo\db\pulse.sqlite "select repo_key, revision, total_files, total_lines from repo_snapshots;"
+sqlite3 .\state\demo\db\pulse.sqlite "select repo_key, path, language, size_bytes, line_count, depth from file_snapshots limit 20;"
+sqlite3 .\state\demo\db\pulse.sqlite "select repo_key, week_start, commit_count, active_contributors from weekly_evolution order by week_start desc limit 20;"
 ```
 
-Main tables:
+Main tables worth knowing first:
 
 - `repositories`
+- `repository_owner_levels`
 - `repo_stage_checkpoints`
 - `fetch_state`
 - `repo_snapshots`
@@ -301,51 +417,66 @@ Main tables:
 
 Schema reference: [schemas/state-tables.md](./schemas/state-tables.md)
 
-## 11. Recommended beginner workflows
+## 13. Safe Reruns
 
-### Investigate one repository quickly
+A feature is not really done in `pulse` unless it survives reruns.
 
-1. Create a CSV with one `repo` row.
-2. Run `pulse list` to confirm normalization.
-3. Run `pulse run --state-dir .\state --progress`.
-4. Run `pulse report --state-dir .\state`.
-5. Inspect `repo_snapshots` and `file_snapshots` in SQLite when needed.
+The intended operator pattern is:
 
-### Investigate a team set of repositories
+1. keep using the same `--state-dir`
+2. rerun `pulse run`
+3. regenerate the report
 
-1. Create a CSV with many `owner/name` rows.
-2. Add a YAML config with shared focus patterns.
-3. Run `pulse run --config ... --state-dir .\state --with-history`.
-4. Run `pulse report --state-dir .\state`.
-5. Query SQLite for repository-wide comparisons when needed.
-
-### Re-run later without losing work
-
-Use the same `--state-dir` on the next run:
+Example:
 
 ```powershell
-cargo run -p pulse-cli -- run --input .\repos.csv --state-dir .\state --with-history --progress
+cargo run -p pulse-cli -- run --config .\pulse.yaml --state-dir .\state\demo --progress --json
+cargo run -p pulse-cli -- report --config .\pulse.yaml --state-dir .\state\demo
 ```
 
-The fetch cache and prior snapshots remain available for reuse.
+This is how you build a time-aware dataset instead of a disposable one.
 
-## 12. Common problems
+## 14. Common Beginner Workflows
+
+### Investigate one repository
+
+1. create a CSV with one `repo`
+2. run `pulse list`
+3. run `pulse run`
+4. run `pulse report`
+
+### Investigate a team portfolio
+
+1. prepare a CSV with many repositories
+2. add `team` or `owner_level_*` metadata
+3. write a YAML config with focus and report settings
+4. run `pulse run --with-history`
+5. render the report
+
+### Investigate a hierarchy
+
+1. add `owner_level_1`, `owner_level_2`, and deeper levels to the CSV
+2. define `report.owner_levels.default_level`
+3. run `pulse`
+4. use the level switcher in the HTML report
+
+## 15. Common Problems
 
 ### `git` is not found
 
-Install Git and make sure `git --version` works in the same shell.
+Install Git and confirm `git --version` works in the same shell.
 
-### Remote repository cannot be fetched
+### Remote fetch fails
 
 Check:
 
 - the repository URL
-- your network connection
-- your Git authentication setup if the repository is private
+- network access
+- authentication for private repositories
 
-### YAML focus parsing fails
+### YAML parsing fails
 
-Make sure `focus.include` and `focus.exclude` are lists:
+Make sure YAML lists are really lists:
 
 ```yaml
 focus:
@@ -357,19 +488,15 @@ focus:
 
 ### Local path repositories do not work
 
-Use an absolute path to a local bare repository.
+Use an absolute path to a local bare Git repository.
 
-## 13. Current implementation notes
+### The report shows less than expected
 
-The current V1 slice is intentionally narrow:
+Remember that the report reads persisted state. If the analysis inputs or config changed, rerun `pulse run` before rerendering `pulse report`.
 
-- fetch uses the `git` CLI
-- static analysis reads Git-tracked files from the fetched revision
-- language detection is currently extension-based
-- history aggregation is currently a simple weekly `git log` summary
+## 16. Where To Go Next
 
-This makes the tool usable now for early repository investigation while leaving room for richer analysis and query features later.
-
-## 14. Worked examples
-
-If you prefer to start from a real run instead of from scratch, inspect the worked examples under the repository `examples/` folder.
+- [architecture/pipeline-overview.md](./architecture/pipeline-overview.md)
+- [architecture/repository-layout.md](./architecture/repository-layout.md)
+- [examples/expected-results.md](./examples/expected-results.md)
+- [../examples/gvillarroel-all-repos/README.md](../examples/gvillarroel-all-repos/README.md)
